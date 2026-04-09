@@ -3,7 +3,7 @@
 </div>
 
 <div align="center">
-  <h3>Self Optimizing Infrastructure for AI Coding Agents</h3>
+  <h3>Self-Optimizing Infrastructure for AI Coding Agents</h3>
 </div>
 
 <div align="center">
@@ -15,23 +15,74 @@
 
 <br>
 
-MEGA Code is a self-evolving infrastructure layer for AI coding agents. It turns your coding sessions into reusable wisdom by generating skills and strategies from real execution traces, decomposing validated knowledge into Primary-Context-Resultant (PCR) units, and reinjecting the right knowledge back into future tasks. Instead of treating skills as flat blocks, MEGA Code structures them at the atomic level so they can be retrieved, recomposed, and improved over time. The result is not just persistence, but compounding problem-solving quality.
+**MEGA Code** turns your AI coding sessions into compounding knowledge. It extracts reusable **skills** and **strategies** from real execution traces, decomposes them into atomic **Primary-Context-Resultant (PCR)** units, and reinjects only the relevant knowledge back into future tasks.
 
-This wisdom is stored in the Wisdom Graph DB: a structured graph that maps relationships between procedures, contexts, constraints, and outcomes across sessions. Rather than loading entire skill blocks into context, MEGA Code retrieves only the knowledge relevant to the user’s current intent, along with workflow-level guidance and step-by-step cheatmaps. It also evaluates generated skills, surfaces ROI, and provides enhanced versions, so the system improves not only by accumulation, but by refinement. This is what allows quality and efficiency to improve together rather than trade off against each other.
+The result: each session makes the next one better — not by accumulating more context, but by refining what gets used and when.
+
+Knowledge is stored in the **Wisdom Graph DB**, a structured graph that maps relationships between procedures, contexts, constraints, and outcomes. Rather than loading entire skill blocks into the prompt, MEGA Code retrieves only what matches the current task, along with workflow guidance and step-by-step cheatmaps. Skills are continuously evaluated and enhanced, so the system improves by refinement — not just accumulation.
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed and working
+- An API key for one of the supported local models (Gemini or OpenAI)
+
+### 1. Install the plugin
+
+From within a Claude Code session, run both of these commands:
+
+```
+/plugin marketplace add https://github.com/wisdomgraph/mega-code
+/plugin install mega-code@mind-ai-mega-code
+```
+
+Then **restart Claude Code** to load the plugin.
+
+### 2. Configure a local model key
+
+MEGA Code uses a local model for processing. Configure one of the following:
+
+```bash
+mega-code configure --gemini-api-key <YOUR_KEY>
+# or
+mega-code configure --openai-api-key <YOUR_KEY>
+```
+
+> **Note:** MEGA Code runs as a local-first runtime. OAuth is not required for normal use.
+
+### 3. Use it in any project
+
+Open Claude Code in any project directory and run:
+
+| Command | What it does |
+|---|---|
+| `/mega-code:wisdom-gen` | Extract skills and strategies from your session traces |
+| `/mega-code:wisdom-curate` | Retrieve relevant skills, workflows, and cheatmaps for your current task |
+| `/mega-code:skill-enhance` | Evaluate existing skills, measure ROI, and generate improved versions |
+| `/mega-code:status` | Check pipeline status and results |
+
+### Updating
+
+```
+/plugin marketplace update mind-ai-mega-code
+```
 
 ---
 
 ## Why MEGA Code
 
-Most approaches to AI agent skills fail in a predictable way. Skills are stored as fixed blocks and injected wholesale into context at session start. As the library grows, the prompt grows — but the reasoning does not. More skills often mean more noise, not more capability.
-
-What matters is not how many skills you store, but whether knowledge can be decomposed, retrieved, recomposed, and improved in a form that fits the task at hand.
+Most skill systems store skills as fixed blocks and inject them wholesale into context. As the library grows, the prompt grows — but reasoning quality does not. More skills often mean more noise, not more capability.
 
 MEGA Code is built around one principle: **Evaluated wisdom compounds. Unevaluated assets just add noise.**
 
+What matters is not how many skills you store, but whether knowledge can be decomposed, retrieved, recomposed, and improved in a form that fits the task at hand.
+
 ---
 
-## Real Work. Real Results.
+## Benchmarks
 
 Measured head-to-head against 5 leading systems on tasks developers actually ship.
 
@@ -73,47 +124,50 @@ Two of the four competing systems perform **worse than using no skills at all**.
 
 ## How It Works
 
-MEGA Code installs as a Claude Code plugin and runs inside your existing workflow — no new coding workflow required.
+MEGA Code installs as a Claude Code plugin and runs inside your existing workflow — no new tools or editors required. It operates through three core flows:
 
-MEGA Code works through three core flows:
+### 1. wisdom-gen — Extract knowledge from sessions
 
-**1. wisdom-gen**  
-MEGA Code reads your coding session traces and extracts reusable wisdom from what actually happened. It identifies:
-- **Skills**: reusable procedures that worked
-- **Strategies**: decision rules and correction patterns that emerged across repeated choices
-- **PCR units**: atomic Primary-Context-Resultant structures distilled from validated knowledge
+Reads your coding session traces and extracts reusable wisdom from what actually happened:
 
-These are written into structured local assets and prepared for reuse.
+- **Skills** — reusable procedures that worked
+- **Strategies** — decision rules and correction patterns from repeated choices
+- **PCR units** — atomic Primary-Context-Resultant structures distilled from validated knowledge
 
-**2. wisdom-curate**  
-MEGA Code does not simply inject an entire skill library into context. Instead, it decomposes curated skills into atomic PCR-level wisdom, stores them in the Wisdom Graph DB, and retrieves only the knowledge relevant to your current intent.
+These are written to structured local files for review and reuse.
 
-For a given command or task, MEGA Code can provide:
-- the most relevant Skills and Strategies
-- a recommended workflow for solving the problem
-- a **Cheatmap** explaining which skills should be used at each step and why
+### 2. wisdom-curate — Retrieve the right knowledge
 
-This allows the agent to use the right knowledge in the right structure, instead of loading everything and adding noise.
+Instead of injecting an entire skill library into context, MEGA Code decomposes curated skills into atomic PCR-level wisdom, stores them in the Wisdom Graph DB, and retrieves only what is relevant to your current task.
 
-> **Note:** For wisdom-curate to work correctly, all Skills recommended by MEGA Code must be installed. Missing skills will cause the curation to reference procedures that the agent cannot access.
+For a given task, it provides:
+- The most relevant Skills and Strategies
+- A recommended workflow for solving the problem
+- A **Cheatmap** — which skills to apply at each step and why
 
-**3. skill-enhance**  
-MEGA Code evaluates generated skills, measures their ROI, and produces enhanced versions. Instead of merely accumulating more assets, the system improves the quality, efficiency, and transferability of the skills you already have.
+> **Note:** All Skills referenced in a curation must be installed locally. Missing skills will cause the curation to reference procedures the agent cannot access.
 
-**What gets generated locally:**
+### 3. skill-enhance — Improve what you have
 
-```bash
+Evaluates generated skills, measures their ROI, and produces enhanced versions. The system improves quality, efficiency, and transferability of existing skills rather than merely accumulating more.
+
+### What gets generated locally
+
+```
 ~/.local/share/mega-code/data/
-├── pending-skills/{skill-name}/SKILL.md         ← reusable procedures extracted from session traces
-├── pending-strategies/{strategy-name}.md        ← decision rules extracted from corrections and repeated choices
-└── enhanced-skills/{skill-name}/SKILL.md        ← evaluated and enhanced versions with ROI insights
+├── pending-skills/{skill-name}/SKILL.md    # Reusable procedures from session traces
+├── pending-strategies/{strategy-name}.md   # Decision rules from corrections and repeated choices
+└── enhanced-skills/{skill-name}/SKILL.md   # Evaluated and enhanced versions with ROI insights
+```
 
-**Example - SKILL.md entry:**
+<details>
+<summary><b>Example: SKILL.md</b></summary>
+
 ```markdown
 ---
 name: ui-consistency-and-discovery
-description: 'Guidelines for maintaining UI legibility and clean aesthetics while
-  using ripgrep for efficient project exploration and global string replacement.'
+description: ‘Guidelines for maintaining UI legibility and clean aesthetics while
+  using ripgrep for efficient project exploration and global string replacement.’
 metadata:
   tags: [ui-ux, ripgrep, accessibility, project-navigation]
   author: co-authored by http://www.megacode.ai
@@ -134,8 +188,11 @@ Only retry the original request once — if it fails again, surface the error.
 Applies to: src/api/client.py, any authenticated endpoint
 Validated: 4 sessions
 ```
+</details>
 
-**Example — strategies.md entry:**
+<details>
+<summary><b>Example: Strategy</b></summary>
+
 ```markdown
 ## Database migration approach
 
@@ -143,198 +200,86 @@ In this project, always run migrations against a local test DB first.
 Schema changes that touch the users table require a backup step before applying.
 Learned from: 2 rollback incidents in sessions 3 and 7.
 ```
+</details>
 
 The agent reads these files at the start of every session. It does not repeat the mistake that generated the strategy. It does not re-derive the procedure that generated the skill.
 
-**Example — Cheatmap output:**
+<details>
+<summary><b>Example: Cheatmap output</b></summary>
+
 ```markdown
 Wisdom Curation
 
 Problem
-Situation: The user is currently in the late stages of a web development project and is looking to refine the visual aesthetics and user interface components of their existing website to achieve a more professional look.
-Symptoms: The current design likely suffers from a generic layout, poor visual hierarchy, or suboptimal color schemes that result in low user engagement metrics and a lack of distinctive brand identity.
-Goals: The user aims to acquire advanced front-end design techniques and UI/UX principles that will significantly elevate the visual quality of the site, ultimately improving user retention rates and overall aesthetic appeal.
+Situation: The user is in the late stages of a web development project and wants
+to refine the visual aesthetics and UI components.
+Goals: Acquire advanced front-end design techniques and UI/UX principles to
+elevate visual quality and improve user retention.
 
 IMPORTANT: How to use this curation
-This curation contains a step-by-step workflow. Each step may have a Reference: entry pointing to domain-specific knowledge that you likely do NOT already know. Before executing each step, you MUST read the referenced section.
+Each step may have a Reference: entry pointing to domain-specific knowledge.
+Before executing each step, you MUST read the referenced section.
 
 step-1: Visual Hierarchy and Aesthetic Audit
 
 Portfolio: 1 core + 0 supporting skills selected for complementary coverage.
 
 1. [H] Visual and Accessibility Audit (score=0.508)
-P: Assess visual polish against an 8px spacing scale, typography hierarchy, and semantic color usage. Verify WCAG 2.1 AA compliance, specifically color contrast ratios and keyboard tab order.
-R: UI components are fully keyboard-accessible and screen-reader friendly. The design system remains consistent by using a single source of truth for primitives.
-Reference: design-review/SKILL.md#Phase 3: Visual Polish L136-150
-Reference: design-review/SKILL.md#Phase 4: Accessibility (WCAG 2.1 AA) L153-174
+   P: Assess visual polish against an 8px spacing scale, typography hierarchy,
+      and semantic color usage. Verify WCAG 2.1 AA compliance.
+   R: UI components are fully keyboard-accessible and screen-reader friendly.
+   Reference: design-review/SKILL.md#Phase 3: Visual Polish L136-150
 
 step-2: Advanced UI Component Design Systems
 
 Portfolio: 1 core + 1 supporting skills selected for complementary coverage.
 
 1. [H] micro-interaction-and-animation-implementation (score=0.501)
-P: Apply subtle CSS transitions and spring physics to buttons, toggles, and form elements to create satisfying tactile feedback.
-R: Interface elements provide immediate, satisfying visual and haptic feedback within 1 second.
-Reference: delight/SKILL.md#Micro-interactions & Animation L84-122
-Reference: delight/SKILL.md#Satisfying Interactions L175-200
-
-2. [M] Animation and Motion Constraints (score=0.372)
-P: Apply performant animation constraints using motion/react and Tailwind CSS to prevent interface slop.
-R: Animations are smooth and do not trigger expensive browser layout or paint cycles.
-Reference: baseline-ui/SKILL.md#Animation L52-64
+   P: Apply subtle CSS transitions and spring physics to buttons, toggles,
+      and form elements.
+   R: Interface elements provide immediate, satisfying visual feedback.
+   Reference: delight/SKILL.md#Micro-interactions & Animation L84-122
 ```
+</details>
 
 ---
 
-## Quick Start
-
-### Step 1 — Install the plugin
-
-**Claude Code**
-
-In a Claude Code session, run:
-
-```
-/plugin marketplace add https://github.com/wisdomgraph/mega-code
-```
-
-**Install the plugin:**
-
-```
-/plugin install mega-code@mind-ai-mega-code
-```
-
-Restart Claude Code to load the plugin.
-
-### Step 2 — Configure a local model key
-
-```
-mega-code configure --gemini-api-key <your_key>
-```
-
-or:
-
-```
-mega-code configure --openai-api-key <your_key>
-```
-
-MEGA Code now runs as a local-first runtime. It does not require MEGA-Code OAuth for normal use.
-
-### Step 3 — Run in any project
-
-```bash
-/mega-code:wisdom-gen         # Generate skills and strategies from session traces
-/mega-code:wisdom-curate      # Retrieve the right skills, workflows, and cheatmaps for your intent
-/mega-code:skill-enhance      # Evaluate skills, measure ROI, and generate enhanced versions
-/mega-code:status             # Check results and local pipeline status
-```
-
----
-
-## How to update
-
-**Claude Code:**
-
-```
-/plugin marketplace update mind-ai-mega-code
-```
-
----
-
-## Development Setup (from main repo)
-
-If you are developing from the main `mega-code` repository (which includes this
-as a submodule), use the sync script to test changes without committing:
-
-```bash
-# From the main mega-code repo root:
-bash scripts/setup-oss-test.sh
-
-# This syncs skills/, hooks/, client code, and installs deps.
-# Then test locally with:
-claude --plugin-dir mega-code-oss/plugin
-```
-
-The sync script copies the latest code from the main repo into this submodule
-so you can iterate quickly without any git commits to GitHub.
-
-## Project Structure
-
-```
-plugin/
-├── .claude-plugin/
-│   └── plugin.json          # Plugin metadata
-├── hooks/
-│   └── hooks.json           # Lifecycle hooks (SessionStart, etc.)
-├── skills/
-│   ├── login/SKILL.md       # /mega-code:login
-│   ├── wisdom-gen/SKILL.md  # /mega-code:wisdom-gen
-│   ├── skill-enhance/SKILL.md # /mega-code:skill-enhance
-│   ├── status/SKILL.md      # /mega-code:status
-│   ├── stop/SKILL.md        # /mega-code:stop
-│   ├── profile/SKILL.md     # /mega-code:profile
-│   └── help/SKILL.md        # /mega-code:help
-├── mega_code/
-│   └── client/              # Python client modules
-├── scripts/
-│   └── session-start.sh     # Bootstrap script
-└── pyproject.toml
-```
-
-## mega-code:wisdom-gen Behaviour
+## wisdom-gen Reference
 
 ### Session resolution
 
-The pipeline always operates on a **project** — a set of collected sessions
-grouped by working directory.
+The pipeline operates on a **project** — a set of sessions grouped by working directory.
 
 | Invocation | What gets processed |
 |---|---|
 | `/mega-code:wisdom-gen` | All sessions for the **current working directory** |
-| `/mega-code:wisdom-gen --project` | Same as above (explicit, equivalent to no args) |
+| `/mega-code:wisdom-gen --project` | Same as above (explicit) |
 | `/mega-code:wisdom-gen --project @name` | All sessions for the named project (prefix-matched against `mapping.json`; also accepts `name`, `name_hash`, or `/absolute/path`) |
 | `/mega-code:wisdom-gen --session-id <uuid>` | A single session by ID |
 
-When no explicit project or session is given, the current working directory is
-hashed to locate its data folder under `~/.local/share/mega-code/projects/`.
+When no project or session is specified, the current working directory is hashed to locate its data folder under `~/.local/share/mega-code/projects/`.
 
 ### Local ingest
 
-Before triggering the pipeline, MEGA Code persists normalized `TurnSet`
-trajectories locally. The local worker then reads those stored turns or falls
-back to the collected session history under
-`~/.local/share/mega-code/projects/{project_id}/`.
-| `codex-sync-ledger.json` | Codex CLI sessions |
+Before triggering the pipeline, MEGA Code persists normalized `TurnSet` trajectories locally. The local worker reads stored turns or falls back to the collected session history under `~/.local/share/mega-code/projects/{project_id}/`.
 
-- Sessions not in the ledger are uploaded.
-- Sessions already in the ledger are skipped, **unless** the source file's
-  `mtime` has changed since the last upload — in which case the session is
-  re-uploaded. This handles sessions whose files are appended to after the
-  initial upload (e.g. a long-running session that gains new turns).
-- The ledger records `uploaded_at`, `turn_count`, and (where applicable)
-  `file_mtime` for each synced session.
+Sync behavior:
+- **New sessions** (not in the ledger) are uploaded.
+- **Known sessions** are skipped, **unless** the source file’s `mtime` has changed — in which case they are re-uploaded. This handles sessions whose files grow after the initial upload (e.g., long-running sessions that gain new turns).
+- The ledger records `uploaded_at`, `turn_count`, and (where applicable) `file_mtime` for each synced session.
 
 #### Sync invariants
 
-1. **No data loss on first run.** When no ledger exists, every locally stored
-   session for the project MUST be uploaded — not just the current terminal session.
-2. **Idempotency.** Re-running `/mega-code:wisdom-gen` with an up-to-date ledger produces
-   no duplicate uploads.
-3. **Modified-session re-sync.** If a session file's `mtime` has changed
-   since the last recorded upload, it MUST be re-uploaded.
-4. **Filter-before-upload.** All turns pass through `SecretMasker` and
-   `PathAnonymizer` before transmission. No raw absolute paths or secrets leave
-   the client.
+1. **No data loss on first run.** When no ledger exists, every locally stored session for the project is uploaded — not just the current terminal session.
+2. **Idempotency.** Re-running `/mega-code:wisdom-gen` with an up-to-date ledger produces no duplicate uploads.
+3. **Modified-session re-sync.** If a session file’s `mtime` has changed since the last recorded upload, it is re-uploaded.
+4. **Filter-before-upload.** All turns pass through `SecretMasker` and `PathAnonymizer` before transmission. No raw absolute paths or secrets leave the client.
 
 ### Pipeline lifecycle
 
-1. **Trigger** — the client sends the project ID (and optionally a session ID)
-   to the server.
-2. **Poll** — the client polls until the server reports completion, failure, or
-   timeout. Default poll timeout is 20 minutes (`--poll-timeout` to override;
-   `0` means wait indefinitely).
-3. **Save** — on success, extracted Skills and Strategies are written to local
-   pending folders for review.
+1. **Trigger** — the client sends the project ID (and optionally a session ID) to the server.
+2. **Poll** — the client polls until the server reports completion, failure, or timeout. Default poll timeout is 20 minutes (`--poll-timeout` to override; `0` = wait indefinitely).
+3. **Save** — on success, extracted Skills and Strategies are written to local pending folders for review.
 
 | Exit code | Meaning |
 |---|---|
@@ -345,10 +290,48 @@ back to the collected session history under
 
 ---
 
+## Project Structure
+
+```
+mega-code/
+├── .claude-plugin/
+│   └── plugin.json              # Plugin metadata
+├── hooks/
+│   └── hooks.json               # Lifecycle hooks (SessionStart, etc.)
+├── skills/
+│   ├── wisdom-gen/SKILL.md      # /mega-code:wisdom-gen
+│   ├── wisdom-curate/SKILL.md   # /mega-code:wisdom-curate
+│   ├── skill-enhance/SKILL.md   # /mega-code:skill-enhance
+│   ├── status/SKILL.md          # /mega-code:status
+│   ├── login/SKILL.md           # /mega-code:login
+│   ├── stop/SKILL.md            # /mega-code:stop
+│   ├── profile/SKILL.md         # /mega-code:profile
+│   └── help/SKILL.md            # /mega-code:help
+├── mega_code/
+│   └── client/                  # Python client modules
+├── scripts/
+│   ├── session-start.sh         # Bootstrap script
+│   └── check_pending_skills.py  # Pending skills checker
+└── pyproject.toml
+```
+
+---
+
 ## Configuration
 
-Configuration is stored in `~/.local/share/mega-code/` and persists across sessions.
-Use `/mega-code:login` to authenticate, or `mega-code configure` CLI for advanced settings.
+Configuration is stored in `~/.local/share/mega-code/` and persists across sessions. Use `/mega-code:login` to authenticate, or `mega-code configure` for advanced settings.
+
+## Development Setup
+
+To develop and test changes locally from this repository:
+
+```bash
+# Install dependencies
+uv sync
+
+# Run the plugin locally with Claude Code
+claude --plugin-dir .
+```
 
 ## Terms of Service
 
