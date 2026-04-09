@@ -18,8 +18,10 @@ from mega_code.client.api.protocol import (
     ACTIVE_STATUSES,
     ActivePipelineItem,
     ActivePipelinesResult,
+    CausalStepFeedbackItem,
     OutputsResult,
     PipelineStatusResult,
+    ReliabilityMetrics,
     TriggerPipelineResult,
     WisdomCurateResult,
     WisdomFeedbackResult,
@@ -55,6 +57,21 @@ class LocalStore:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _ensure_column(
+        self,
+        conn: sqlite3.Connection,
+        table_name: str,
+        column_name: str,
+        definition: str,
+    ) -> None:
+        columns = {
+            row["name"]
+            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        if column_name in columns:
+            return
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
@@ -216,6 +233,10 @@ class LocalStore:
                     curation TEXT NOT NULL,
                     skills_json TEXT NOT NULL,
                     wisdoms_json TEXT NOT NULL,
+                    operator_plan_json TEXT NOT NULL DEFAULT '[]',
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    should_abstain INTEGER NOT NULL DEFAULT 0,
+                    abstain_reason TEXT NOT NULL DEFAULT '',
                     token_count INTEGER NOT NULL DEFAULT 0,
                     cost_usd REAL NOT NULL DEFAULT 0.0,
                     created_at TEXT NOT NULL,
@@ -226,7 +247,42 @@ class LocalStore:
                     feedback_id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
                     feedback_text TEXT NOT NULL,
+                    failure_stage TEXT NOT NULL DEFAULT 'unknown',
+                    should_abstain INTEGER NOT NULL DEFAULT 0,
+                    summary_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS curation_feedback_steps (
+                    step_feedback_id TEXT PRIMARY KEY,
+                    feedback_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    operator_id TEXT,
+                    operator_title TEXT NOT NULL DEFAULT '',
+                    verdict TEXT NOT NULL,
+                    failure_stage TEXT NOT NULL DEFAULT 'unknown',
+                    selected INTEGER NOT NULL DEFAULT 1,
+                    predicted_success REAL,
+                    predicted_confidence REAL,
+                    note TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS operator_reliability (
+                    operator_id TEXT PRIMARY KEY,
+                    selection_count INTEGER NOT NULL DEFAULT 0,
+                    helped_count INTEGER NOT NULL DEFAULT 0,
+                    hurt_count INTEGER NOT NULL DEFAULT 0,
+                    unused_count INTEGER NOT NULL DEFAULT 0,
+                    retrieval_miss_count INTEGER NOT NULL DEFAULT 0,
+                    execution_miss_count INTEGER NOT NULL DEFAULT 0,
+                    abstain_count INTEGER NOT NULL DEFAULT 0,
+                    predicted_success_sum REAL NOT NULL DEFAULT 0.0,
+                    confidence_sum REAL NOT NULL DEFAULT 0.0,
+                    calibration_error_sum REAL NOT NULL DEFAULT 0.0,
+                    brier_score_sum REAL NOT NULL DEFAULT 0.0,
+                    outcome_count INTEGER NOT NULL DEFAULT 0,
+                    last_feedback_at TEXT NOT NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status
@@ -249,8 +305,21 @@ class LocalStore:
                     ON operator_postconditions(operator_id);
                 CREATE INDEX IF NOT EXISTS idx_operator_slots_operator
                     ON operator_slots(operator_id);
+                CREATE INDEX IF NOT EXISTS idx_curation_feedback_session
+                    ON curation_feedback(session_id);
+                CREATE INDEX IF NOT EXISTS idx_feedback_steps_feedback
+                    ON curation_feedback_steps(feedback_id);
+                CREATE INDEX IF NOT EXISTS idx_feedback_steps_operator
+                    ON curation_feedback_steps(operator_id);
                 """
             )
+            self._ensure_column(conn, "curation_sessions", "operator_plan_json", "TEXT NOT NULL DEFAULT '[]'")
+            self._ensure_column(conn, "curation_sessions", "confidence", "REAL NOT NULL DEFAULT 0.0")
+            self._ensure_column(conn, "curation_sessions", "should_abstain", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "curation_sessions", "abstain_reason", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "curation_feedback", "failure_stage", "TEXT NOT NULL DEFAULT 'unknown'")
+            self._ensure_column(conn, "curation_feedback", "should_abstain", "INTEGER NOT NULL DEFAULT 0")
+            self._ensure_column(conn, "curation_feedback", "summary_json", "TEXT NOT NULL DEFAULT '{}'")
 
     def project_knowledge_dir(self) -> Path:
         root = data_dir() / "knowledge"
@@ -874,6 +943,7 @@ class LocalStore:
             )
             slots = self._fetch_related_rows(conn, "operator_slots", "operator_id", operator_ids)
             fingerprints = self._fetch_index_rows(conn, "operator_env_fingerprints", operator_ids)
+            reliability_rows = self._fetch_index_rows(conn, "operator_reliability", operator_ids)
         operators: list[dict[str, Any]] = []
         for row in operator_rows:
             operator_id = row["operator_id"]
@@ -891,6 +961,9 @@ class LocalStore:
                     "postconditions": postconditions.get(operator_id, []),
                     "slots": slots.get(operator_id, []),
                     "env_fingerprint": fingerprints.get(operator_id, {}),
+                    "reliability": self._summarize_operator_reliability(
+                        reliability_rows.get(operator_id)
+                    ).model_dump(),
                 }
             )
         return operators
@@ -901,9 +974,10 @@ class LocalStore:
                 """
                 INSERT OR REPLACE INTO curation_sessions(
                     session_id, query, curation, skills_json, wisdoms_json,
+                    operator_plan_json, confidence, should_abstain, abstain_reason,
                     token_count, cost_usd, created_at, status
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     result.session_id,
@@ -911,6 +985,10 @@ class LocalStore:
                     result.curation,
                     json.dumps([item.model_dump() for item in result.skills]),
                     json.dumps([item.model_dump() for item in result.wisdoms]),
+                    json.dumps([item.model_dump() for item in result.operator_plan]),
+                    float(result.confidence),
+                    int(result.should_abstain),
+                    result.abstain_reason,
                     result.token_count,
                     result.cost_usd,
                     utcnow_iso(),
@@ -918,36 +996,309 @@ class LocalStore:
                 ),
             )
 
-    def save_feedback(self, session_id: str, feedback_text: str) -> WisdomFeedbackResult:
+    def save_feedback(
+        self,
+        session_id: str,
+        feedback_text: str,
+        *,
+        failure_stage: str = "unknown",
+        should_abstain: bool | None = None,
+        step_feedback: list[CausalStepFeedbackItem] | None = None,
+    ) -> WisdomFeedbackResult:
         feedback_id = str(uuid.uuid4())
+        created_at = utcnow_iso()
+        inferred = infer_feedback_summary(feedback_text)
+        resolved_failure_stage = normalize_failure_stage(
+            failure_stage if failure_stage != "unknown" else inferred["failure_stage"]
+        )
+        resolved_should_abstain = (
+            bool(should_abstain)
+            if should_abstain is not None
+            else bool(inferred["should_abstain"])
+        )
+        explicit_step_feedback = [item.model_dump() for item in (step_feedback or [])]
         with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO curation_feedback(feedback_id, session_id, feedback_text, created_at)
-                VALUES(?, ?, ?, ?)
-                """,
-                (feedback_id, session_id, feedback_text, utcnow_iso()),
-            )
-            row = conn.execute(
-                "SELECT wisdoms_json FROM curation_sessions WHERE session_id=?",
+            session_row = conn.execute(
+                "SELECT wisdoms_json, operator_plan_json FROM curation_sessions WHERE session_id=?",
                 (session_id,),
             ).fetchone()
-            wisdoms = json.loads(row["wisdoms_json"]) if row and row["wisdoms_json"] else []
-            delta = feedback_delta(feedback_text)
-            for wisdom in wisdoms:
+            if session_row is None:
+                raise KeyError(f"Unknown session_id: {session_id}")
+            operator_plan = (
+                json.loads(session_row["operator_plan_json"])
+                if session_row["operator_plan_json"]
+                else []
+            )
+            resolved_steps = resolve_step_feedback(
+                feedback_text=feedback_text,
+                operator_plan=operator_plan,
+                explicit_step_feedback=explicit_step_feedback,
+                failure_stage=resolved_failure_stage,
+            )
+            summary = {
+                "inferred_failure_stage": inferred["failure_stage"],
+                "resolved_failure_stage": resolved_failure_stage,
+                "explicit_step_feedback": bool(explicit_step_feedback),
+                "applied_step_feedback": len(resolved_steps),
+            }
+            conn.execute(
+                """
+                INSERT INTO curation_feedback(
+                    feedback_id, session_id, feedback_text, failure_stage,
+                    should_abstain, summary_json, created_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    feedback_id,
+                    session_id,
+                    feedback_text,
+                    resolved_failure_stage,
+                    int(resolved_should_abstain),
+                    json.dumps(summary),
+                    created_at,
+                ),
+            )
+            plan_lookup = {
+                item["operator_id"]: item
+                for item in operator_plan
+                if item.get("operator_id")
+            }
+            updated_operator_ids: set[str] = set()
+            for item in resolved_steps:
+                operator_id = item.get("operator_id", "").strip() or None
+                verdict = normalize_feedback_verdict(item.get("verdict"))
+                step_stage = normalize_failure_stage(item.get("failure_stage") or resolved_failure_stage)
+                selected = int(item.get("selected", verdict != "missing"))
+                plan_item = plan_lookup.get(operator_id or "", {})
+                predicted_success = _coerce_float(plan_item.get("predicted_success"))
+                predicted_confidence = _coerce_float(plan_item.get("confidence"))
                 conn.execute(
                     """
-                    UPDATE operators
-                    SET feedback_score = feedback_score + ?
-                    WHERE operator_id = ?
+                    INSERT INTO curation_feedback_steps(
+                        step_feedback_id, feedback_id, session_id, operator_id, operator_title,
+                        verdict, failure_stage, selected, predicted_success, predicted_confidence,
+                        note, created_at
+                    )
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (delta, wisdom.get("wisdom_id")),
+                    (
+                        str(uuid.uuid4()),
+                        feedback_id,
+                        session_id,
+                        operator_id,
+                        item.get("title") or plan_item.get("title") or "",
+                        verdict,
+                        step_stage,
+                        selected,
+                        predicted_success,
+                        predicted_confidence,
+                        item.get("note", ""),
+                        created_at,
+                    ),
                 )
+                if not operator_id:
+                    continue
+                self._apply_operator_feedback_event(
+                    conn,
+                    operator_id=operator_id,
+                    verdict=verdict,
+                    failure_stage=step_stage,
+                    selected=bool(selected),
+                    should_abstain=resolved_should_abstain,
+                    predicted_success=predicted_success,
+                    predicted_confidence=predicted_confidence,
+                    created_at=created_at,
+                )
+                updated_operator_ids.add(operator_id)
             conn.execute(
                 "UPDATE curation_sessions SET status='completed' WHERE session_id=?",
                 (session_id,),
             )
-        return WisdomFeedbackResult(session_id=session_id, feedback_id=feedback_id, status="saved")
+        return WisdomFeedbackResult(
+            session_id=session_id,
+            feedback_id=feedback_id,
+            status="saved",
+            failure_stage=resolved_failure_stage,
+            applied_steps=len(resolved_steps),
+            updated_operator_ids=sorted(updated_operator_ids),
+        )
+
+    def _apply_operator_feedback_event(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        operator_id: str,
+        verdict: str,
+        failure_stage: str,
+        selected: bool,
+        should_abstain: bool,
+        predicted_success: float | None,
+        predicted_confidence: float | None,
+        created_at: str,
+    ) -> None:
+        row = conn.execute(
+            "SELECT * FROM operator_reliability WHERE operator_id=?",
+            (operator_id,),
+        ).fetchone()
+        current = dict(row) if row else {}
+        selection_count = int(current.get("selection_count", 0)) + int(selected)
+        helped_count = int(current.get("helped_count", 0)) + int(verdict == "helped")
+        hurt_count = int(current.get("hurt_count", 0)) + int(verdict == "hurt")
+        unused_count = int(current.get("unused_count", 0)) + int(verdict == "unused")
+        retrieval_miss_count = int(current.get("retrieval_miss_count", 0)) + int(
+            failure_stage in {"retrieval", "mixed"}
+        )
+        execution_miss_count = int(current.get("execution_miss_count", 0)) + int(
+            failure_stage in {"execution", "mixed"}
+        )
+        abstain_count = int(current.get("abstain_count", 0)) + int(should_abstain)
+        predicted_success_sum = float(current.get("predicted_success_sum", 0.0))
+        confidence_sum = float(current.get("confidence_sum", 0.0))
+        calibration_error_sum = float(current.get("calibration_error_sum", 0.0))
+        brier_score_sum = float(current.get("brier_score_sum", 0.0))
+        outcome_count = int(current.get("outcome_count", 0))
+        if predicted_success is not None:
+            observed = 1.0 if verdict == "helped" else 0.0
+            predicted_success_sum += predicted_success
+            confidence_sum += predicted_confidence if predicted_confidence is not None else 0.35
+            calibration_error_sum += abs(predicted_success - observed)
+            brier_score_sum += (predicted_success - observed) ** 2
+            outcome_count += 1
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO operator_reliability(
+                operator_id, selection_count, helped_count, hurt_count, unused_count,
+                retrieval_miss_count, execution_miss_count, abstain_count,
+                predicted_success_sum, confidence_sum, calibration_error_sum,
+                brier_score_sum, outcome_count, last_feedback_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                operator_id,
+                selection_count,
+                helped_count,
+                hurt_count,
+                unused_count,
+                retrieval_miss_count,
+                execution_miss_count,
+                abstain_count,
+                predicted_success_sum,
+                confidence_sum,
+                calibration_error_sum,
+                brier_score_sum,
+                outcome_count,
+                created_at,
+            ),
+        )
+        summary = self._summarize_operator_reliability(
+            {
+                "operator_id": operator_id,
+                "selection_count": selection_count,
+                "helped_count": helped_count,
+                "hurt_count": hurt_count,
+                "unused_count": unused_count,
+                "retrieval_miss_count": retrieval_miss_count,
+                "execution_miss_count": execution_miss_count,
+                "abstain_count": abstain_count,
+                "predicted_success_sum": predicted_success_sum,
+                "confidence_sum": confidence_sum,
+                "calibration_error_sum": calibration_error_sum,
+                "brier_score_sum": brier_score_sum,
+                "outcome_count": outcome_count,
+            }
+        )
+        conn.execute(
+            """
+            UPDATE operators
+            SET feedback_score = ?
+            WHERE operator_id = ?
+            """,
+            (feedback_score_from_reliability(summary), operator_id),
+        )
+
+    def _summarize_operator_reliability(
+        self,
+        row: dict[str, Any] | sqlite3.Row | None,
+    ) -> ReliabilityMetrics:
+        payload = dict(row) if row else {}
+        selection_count = int(payload.get("selection_count", 0))
+        helped_count = int(payload.get("helped_count", 0))
+        hurt_count = int(payload.get("hurt_count", 0))
+        unused_count = int(payload.get("unused_count", 0))
+        retrieval_miss_count = int(payload.get("retrieval_miss_count", 0))
+        execution_miss_count = int(payload.get("execution_miss_count", 0))
+        abstain_count = int(payload.get("abstain_count", 0))
+        outcome_count = int(payload.get("outcome_count", 0))
+        calibration_error = (
+            float(payload.get("calibration_error_sum", 0.0)) / outcome_count
+            if outcome_count
+            else 0.25
+        )
+        brier_score = (
+            float(payload.get("brier_score_sum", 0.0)) / outcome_count
+            if outcome_count
+            else 0.25
+        )
+        prior_success = (
+            (helped_count + 1.0) / (selection_count + 2.0)
+            if selection_count
+            else 0.5
+        )
+        retrieval_precision = (
+            helped_count / selection_count
+            if selection_count
+            else 0.5
+        )
+        execution_trials = helped_count + execution_miss_count
+        execution_success_rate = (
+            helped_count / execution_trials
+            if execution_trials
+            else 0.5
+        )
+        evidence_strength = 1.0 - math.exp(-selection_count / 3.0) if selection_count else 0.0
+        confidence = clamp(
+            0.2
+            + 0.3 * evidence_strength
+            + 0.25 * max(0.0, 1.0 - calibration_error)
+            + 0.25 * retrieval_precision,
+            lower=0.05,
+            upper=0.99,
+        )
+        empirical_reliability = clamp(
+            evidence_strength
+            * max(0.0, 1.0 - calibration_error)
+            * (0.5 * retrieval_precision + 0.5 * execution_success_rate),
+            lower=0.0,
+            upper=0.99,
+        )
+        abstain_probability = clamp(
+            max(0.0, 0.55 - prior_success)
+            + max(0.0, 0.45 - confidence)
+            + (hurt_count / selection_count if selection_count else 0.0) * 0.35
+            + (retrieval_miss_count / selection_count if selection_count else 0.0) * 0.25
+            + (abstain_count / selection_count if selection_count else 0.0) * 0.45,
+            lower=0.0,
+            upper=0.99,
+        )
+        return ReliabilityMetrics(
+            selection_count=selection_count,
+            helped_count=helped_count,
+            hurt_count=hurt_count,
+            unused_count=unused_count,
+            retrieval_miss_count=retrieval_miss_count,
+            execution_miss_count=execution_miss_count,
+            abstain_count=abstain_count,
+            prior_success=round(prior_success, 6),
+            confidence=round(confidence, 6),
+            retrieval_precision=round(retrieval_precision, 6),
+            execution_success_rate=round(execution_success_rate, 6),
+            calibration_error=round(calibration_error, 6),
+            brier_score=round(brier_score, 6),
+            empirical_reliability=round(empirical_reliability, 6),
+            abstain_probability=round(abstain_probability, 6),
+        )
 
     def signal_pid(self, pid: int | None) -> None:
         if not pid:
@@ -1058,13 +1409,144 @@ class LocalStore:
         return grouped
 
 
-def feedback_delta(feedback_text: str) -> float:
+def _coerce_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def clamp(value: float, *, lower: float = 0.0, upper: float = 1.0) -> float:
+    return max(lower, min(upper, value))
+
+
+def normalize_failure_stage(value: str | None) -> str:
+    normalized = (value or "unknown").strip().lower()
+    if normalized in {"none", "retrieval", "execution", "mixed", "unknown"}:
+        return normalized
+    return "unknown"
+
+
+def normalize_feedback_verdict(value: str | None) -> str:
+    normalized = (value or "unused").strip().lower()
+    if normalized in {"helped", "hurt", "unused", "missing"}:
+        return normalized
+    return "unused"
+
+
+def infer_feedback_summary(feedback_text: str) -> dict[str, Any]:
     text = feedback_text.lower()
-    if "1/5" in text or "2/5" in text or "harmful" in text or "bad" in text:
-        return -0.2
-    if "5/5" in text or "4/5" in text or "useful" in text or "great" in text:
-        return 0.2
-    return 0.05
+    retrieval_terms = ("retriev", "wrong step", "wrong match", "didn't find", "did not find", "missing step")
+    execution_terms = ("execute", "execution", "ran", "runtime", "test failed", "broke", "regression")
+    should_abstain = any(
+        marker in text
+        for marker in ("abstain", "shouldn't answer", "should not answer", "shouldn't recommend", "do not recommend")
+    )
+    if any(term in text for term in retrieval_terms) and any(term in text for term in execution_terms):
+        failure_stage = "mixed"
+    elif any(term in text for term in retrieval_terms):
+        failure_stage = "retrieval"
+    elif any(term in text for term in execution_terms):
+        failure_stage = "execution"
+    elif any(marker in text for marker in ("useful", "helpful", "worked", "great", "good", "5/5", "4/5")):
+        failure_stage = "none"
+    else:
+        failure_stage = "unknown"
+    return {
+        "failure_stage": failure_stage,
+        "should_abstain": should_abstain,
+    }
+
+
+def infer_feedback_verdict(feedback_text: str, *, failure_stage: str) -> str:
+    text = feedback_text.lower()
+    if any(marker in text for marker in ("unused", "didn't use", "did not use", "ignored", "not needed")):
+        return "unused"
+    if any(marker in text for marker in ("harmful", "misleading", "wrong", "bad", "broke", "regression", "hurt", "failed")):
+        return "hurt"
+    if any(marker in text for marker in ("useful", "helpful", "worked", "great", "good", "5/5", "4/5", "resolved", "fixed")):
+        return "helped"
+    if failure_stage in {"retrieval", "execution", "mixed"}:
+        return "hurt"
+    return "unused"
+
+
+def resolve_step_feedback(
+    *,
+    feedback_text: str,
+    operator_plan: list[dict[str, Any]],
+    explicit_step_feedback: list[dict[str, Any]],
+    failure_stage: str,
+) -> list[dict[str, Any]]:
+    if explicit_step_feedback:
+        resolved: list[dict[str, Any]] = []
+        for item in explicit_step_feedback:
+            resolved.append(
+                {
+                    "operator_id": str(item.get("operator_id", "")).strip(),
+                    "title": str(item.get("title", "")).strip(),
+                    "verdict": normalize_feedback_verdict(item.get("verdict")),
+                    "failure_stage": normalize_failure_stage(item.get("failure_stage") or failure_stage),
+                    "selected": item.get("selected", item.get("verdict") != "missing"),
+                    "note": str(item.get("note", "")).strip(),
+                }
+            )
+        return resolved
+    if not operator_plan:
+        return []
+    lower_text = feedback_text.lower()
+    matched: list[dict[str, Any]] = []
+    inferred_verdict = infer_feedback_verdict(feedback_text, failure_stage=failure_stage)
+    for item in operator_plan:
+        title = str(item.get("title", "")).strip()
+        source_artifact = str(item.get("source_artifact", "")).strip()
+        if (title and title.lower() in lower_text) or (source_artifact and source_artifact.lower() in lower_text):
+            matched.append(
+                {
+                    "operator_id": item.get("operator_id", ""),
+                    "title": title,
+                    "verdict": inferred_verdict,
+                    "failure_stage": failure_stage,
+                    "selected": True,
+                    "note": feedback_text.strip(),
+                }
+            )
+    if matched:
+        return matched
+    if len(operator_plan) == 1:
+        only = operator_plan[0]
+        return [
+            {
+                "operator_id": only.get("operator_id", ""),
+                "title": only.get("title", ""),
+                "verdict": inferred_verdict,
+                "failure_stage": failure_stage,
+                "selected": True,
+                "note": feedback_text.strip(),
+            }
+        ]
+    if inferred_verdict in {"helped", "hurt"}:
+        top = operator_plan[0]
+        return [
+            {
+                "operator_id": top.get("operator_id", ""),
+                "title": top.get("title", ""),
+                "verdict": inferred_verdict,
+                "failure_stage": failure_stage,
+                "selected": True,
+                "note": feedback_text.strip(),
+            }
+        ]
+    return []
+
+
+def feedback_score_from_reliability(metrics: ReliabilityMetrics) -> float:
+    net_helpfulness = (metrics.prior_success - 0.5) * (0.5 + 0.5 * metrics.confidence)
+    abstain_penalty = metrics.abstain_probability * 0.2
+    reliability_bonus = metrics.empirical_reliability * 0.1
+    return round(net_helpfulness + reliability_bonus - abstain_penalty, 6)
 
 
 def normalize_scores(values: Iterable[float]) -> list[float]:

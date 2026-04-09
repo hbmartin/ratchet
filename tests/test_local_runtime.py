@@ -171,11 +171,15 @@ def test_local_pipeline_ingest_lifecycle_and_feedback(tmp_path, monkeypatch):
     assert curation.skills
     assert curation.operator_plan
     assert curation.readiness_summary is not None
+    assert curation.confidence > 0
     assert any(skill.name == skill_name for skill in curation.skills)
     first_wisdom = curation.wisdoms[0]
     first_operator = curation.operator_plan[0]
     assert first_operator.operator_id == first_wisdom.wisdom_id
     assert first_operator.source_artifact == skill_name
+    assert first_operator.confidence > 0
+    assert first_operator.reliability is not None
+    assert first_wisdom.confidence > 0
 
     feedback = fresh_client.wisdom_feedback(
         session_id=curation.session_id,

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from mega_code.client.api.protocol import CausalStepFeedbackItem
 from mega_code.pipeline.llm import batch_embed_texts
 from mega_code.pipeline.runtime import curate_local_wisdom
 from mega_code.pipeline.store import LocalStore, utcnow_iso
@@ -235,6 +236,8 @@ def test_operator_graph_schema_is_created(tmp_path, monkeypatch):
         "operator_postconditions",
         "operator_slots",
         "operator_env_fingerprints",
+        "curation_feedback_steps",
+        "operator_reliability",
     }.issubset(tables)
 
 
@@ -506,6 +509,111 @@ def test_feedback_increases_operator_rank(tmp_path, monkeypatch):
 
     assert feedback.status == "saved"
     assert second.operator_plan[0].score > first.operator_plan[0].score
+    assert second.operator_plan[0].confidence > 0
+    assert second.operator_plan[0].reliability is not None
+
+
+def test_structured_feedback_updates_only_targeted_operator(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    _prepare_project_root(tmp_path, monkeypatch)
+    store = LocalStore()
+
+    helped_id = str(uuid.uuid4())
+    hurt_id = str(uuid.uuid4())
+    _persist_operators(
+        store=store,
+        tmp_path=tmp_path,
+        operators=[
+            _operator_payload(
+                artifact_id="placeholder",
+                artifact_name="feedback-skill",
+                operator_id=helped_id,
+                title="Inspect auth refresh flow",
+                procedure="Inspect the auth refresh flow.",
+                context="python uv auth refresh",
+                outcome="refresh flow is understood",
+            ),
+            _operator_payload(
+                artifact_id="placeholder",
+                artifact_name="feedback-skill",
+                operator_id=hurt_id,
+                title="Inspect unrelated billing hook",
+                procedure="Inspect the unrelated billing hook.",
+                context="python uv billing hook",
+                outcome="billing hook is understood",
+            ),
+        ],
+    )
+
+    first = curate_local_wisdom(query="inspect auth refresh flow", top_k=2, store=store)
+    feedback = store.save_feedback(
+        first.session_id,
+        "The auth step helped, but the billing step was the wrong retrieval.",
+        step_feedback=[
+            CausalStepFeedbackItem(operator_id=helped_id, verdict="helped", failure_stage="none"),
+            CausalStepFeedbackItem(operator_id=hurt_id, verdict="hurt", failure_stage="retrieval"),
+        ],
+    )
+    second = curate_local_wisdom(query="inspect auth refresh flow", top_k=2, store=store)
+    second_by_id = {item.operator_id: item for item in second.operator_plan}
+
+    assert feedback.applied_steps == 2
+    assert second_by_id[helped_id].score > second_by_id[hurt_id].score
+    assert second_by_id[helped_id].reliability is not None
+    assert second_by_id[helped_id].reliability.helped_count == 1
+    assert second_by_id[hurt_id].reliability is not None
+    assert second_by_id[hurt_id].reliability.hurt_count == 1
+    assert second_by_id[hurt_id].reliability.retrieval_miss_count == 1
+
+
+def test_feedback_can_mark_operator_for_abstention(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    _prepare_project_root(tmp_path, monkeypatch)
+    store = LocalStore()
+
+    operator_id = str(uuid.uuid4())
+    _persist_operators(
+        store=store,
+        tmp_path=tmp_path,
+        operators=[
+            _operator_payload(
+                artifact_id="placeholder",
+                artifact_name="abstain-skill",
+                operator_id=operator_id,
+                title="Apply risky database patch",
+                procedure="Apply the risky database patch.",
+                context="python uv postgres migration",
+                outcome="database patch is applied",
+            )
+        ],
+    )
+
+    first = curate_local_wisdom(query="apply risky database patch", top_k=1, store=store)
+    store.save_feedback(
+        first.session_id,
+        "This step should have been avoided.",
+        failure_stage="execution",
+        should_abstain=True,
+        step_feedback=[
+            CausalStepFeedbackItem(
+                operator_id=operator_id,
+                verdict="hurt",
+                failure_stage="execution",
+                note="Execution path was too risky for a recommendation.",
+            )
+        ],
+    )
+    second = curate_local_wisdom(query="apply risky database patch", top_k=1, store=store)
+
+    assert second.should_abstain is True
+    assert second.abstain_reason
+    assert second.operator_plan[0].should_abstain is True
+    assert second.operator_plan[0].abstain_reason
+    assert second.operator_plan[0].reliability is not None
+    assert second.operator_plan[0].reliability.abstain_count == 1
+    assert second.operator_plan[0].reliability.execution_miss_count == 1
 
 
 def test_curate_marks_seeds_and_parallel_waves(tmp_path, monkeypatch):
@@ -563,4 +671,5 @@ def test_curate_returns_empty_plan_without_operators(tmp_path, monkeypatch):
     assert result.operator_plan == []
     assert result.wisdoms == []
     assert result.readiness_summary == {"ready": 0, "blocked": 0}
+    assert result.should_abstain is True
     assert "No operator graph data is available yet" in result.curation

@@ -2371,6 +2371,76 @@ def _inclusion_reason(
     return "Recovered by structural diffusion and reranking."
 
 
+def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
+    return max(lower, min(upper, value))
+
+
+def _current_prediction_metrics(
+    *,
+    operator: dict[str, Any],
+    seed_score: float,
+    structural_score: float,
+    facet_score: float,
+    contextual_score: float,
+    env_match_score: float,
+    support_score: float,
+    dependency_penalty: float,
+) -> dict[str, float | bool | str]:
+    reliability = operator.get("reliability") or {}
+    prior_success = float(reliability.get("prior_success", 0.5))
+    prior_confidence = float(reliability.get("confidence", 0.35))
+    empirical_reliability = float(reliability.get("empirical_reliability", 0.0))
+    abstain_probability = float(reliability.get("abstain_probability", 0.0))
+    retrieval_signal = _clamp(
+        0.38 * seed_score
+        + 0.18 * structural_score
+        + 0.14 * facet_score
+        + 0.10 * contextual_score
+        + 0.12 * env_match_score
+        + 0.08 * support_score
+    )
+    dependency_stability = _clamp(1.0 - min(dependency_penalty * 12.0, 0.8))
+    predicted_success = _clamp(0.55 * retrieval_signal + 0.45 * prior_success)
+    confidence = _clamp(
+        0.45 * prior_confidence + 0.35 * retrieval_signal + 0.20 * dependency_stability,
+        lower=0.05,
+        upper=0.99,
+    )
+    current_abstain_probability = _clamp(
+        0.65 * abstain_probability
+        + max(0.0, 0.52 - predicted_success)
+        + max(0.0, 0.45 - confidence) * 0.8
+        + max(0.0, 0.55 - env_match_score) * 0.2,
+        lower=0.0,
+        upper=0.99,
+    )
+    should_abstain = bool(current_abstain_probability >= 0.55)
+    if not should_abstain:
+        abstain_reason = ""
+    elif predicted_success < 0.45:
+        abstain_reason = "Low predicted success given current retrieval evidence."
+    elif confidence < 0.45:
+        abstain_reason = "Not enough calibrated evidence to recommend this step confidently."
+    elif env_match_score < 0.55:
+        abstain_reason = "Environment match is too weak for a strong recommendation."
+    else:
+        abstain_reason = "Historical feedback indicates this step should be treated cautiously."
+    reliability_boost = (
+        (predicted_success - 0.5) * 0.16
+        + empirical_reliability * 0.08
+        + (confidence - 0.5) * 0.04
+        - current_abstain_probability * 0.12
+    )
+    return {
+        "predicted_success": round(predicted_success, 6),
+        "confidence": round(confidence, 6),
+        "abstain_probability": round(current_abstain_probability, 6),
+        "should_abstain": should_abstain,
+        "abstain_reason": abstain_reason,
+        "reliability_boost": round(reliability_boost, 6),
+    }
+
+
 def _env_match_score(current: dict[str, Any], candidate: dict[str, Any]) -> float:
     checks = 0.0
     score = 0.0
@@ -2495,6 +2565,9 @@ def curate_local_wisdom(
             wisdoms=[],
             operator_plan=[],
             readiness_summary={"ready": 0, "blocked": 0},
+            confidence=0.0,
+            should_abstain=True,
+            abstain_reason="No operator graph data is available yet.",
             token_count=0,
             cost_usd=0.0,
         )
@@ -2585,24 +2658,34 @@ def curate_local_wisdom(
         operator_id = operator["operator_id"]
         candidate_fingerprint = json.loads(operator["env_fingerprint"].get("fingerprint_json", "{}"))
         env_match_score = _env_match_score(current_env, candidate_fingerprint)
-        feedback_boost = float(operator["feedback_score"]) * 0.12
         recency_boost = max(0.0, 0.08 - min(_days_since(operator["created_at"]) / 365.0, 0.08))
         provenance_boost = 0.04 if operator.get("source_path") else 0.0
         dependency_penalty = 0.02 * max(len(_structural_dependency_ids(operator, selected_ids)) - 1, 0)
+        facet_score = max(
+            procedure_scores.get(operator_id, 0.0),
+            context_scores.get(operator_id, 0.0),
+            outcome_scores.get(operator_id, 0.0),
+        )
+        prediction = _current_prediction_metrics(
+            operator=operator,
+            seed_score=seed_scores.get(operator_id, 0.0),
+            structural_score=structural_scores.get(operator_id, 0.0),
+            facet_score=facet_score,
+            contextual_score=contextual_scores.get(operator_id, 0.0),
+            env_match_score=env_match_score,
+            support_score=support_scores.get(operator_id, 0.0),
+            dependency_penalty=dependency_penalty,
+        )
         rerank_score = (
             0.34 * seed_scores.get(operator_id, 0.0)
             + 0.24 * structural_scores.get(operator_id, 0.0)
-            + 0.14 * max(
-                procedure_scores.get(operator_id, 0.0),
-                context_scores.get(operator_id, 0.0),
-                outcome_scores.get(operator_id, 0.0),
-            )
+            + 0.14 * facet_score
             + 0.08 * contextual_scores.get(operator_id, 0.0)
             + 0.14 * env_match_score
             + 0.06 * support_scores.get(operator_id, 0.0)
-            + feedback_boost
             + recency_boost
             + provenance_boost
+            + float(prediction["reliability_boost"])
             - dependency_penalty
         )
         entry = {
@@ -2610,6 +2693,11 @@ def curate_local_wisdom(
             "seed_score": round(seed_scores.get(operator_id, 0.0), 6),
             "structural_score": round(structural_scores.get(operator_id, 0.0), 6),
             "env_match_score": round(env_match_score, 6),
+            "predicted_success": float(prediction["predicted_success"]),
+            "confidence": float(prediction["confidence"]),
+            "abstain_probability": float(prediction["abstain_probability"]),
+            "should_abstain": bool(prediction["should_abstain"]),
+            "abstain_reason": str(prediction["abstain_reason"]),
             "score": round(rerank_score, 6),
         }
         scored.append(entry)
@@ -2618,8 +2706,12 @@ def curate_local_wisdom(
             "env_match_score": float(entry["env_match_score"]),
             "seed_score": float(entry["seed_score"]),
             "structural_score": float(entry["structural_score"]),
+            "predicted_success": float(entry["predicted_success"]),
+            "confidence": float(entry["confidence"]),
+            "abstain_probability": float(entry["abstain_probability"]),
         }
     scored.sort(key=lambda item: item["score"], reverse=True)
+    scored_map = {item["operator_id"]: item for item in scored}
     kept_ids: list[str] = []
     dropped_by_conflict: set[str] = set()
     for item in sorted(
@@ -2633,7 +2725,7 @@ def curate_local_wisdom(
         kept_ids.append(operator_id)
         dropped_by_conflict.update(_operator_conflict_ids(item))
         dropped_by_conflict.discard(operator_id)
-    selected_map = {item_id: operator_map[item_id] for item_id in kept_ids}
+    selected_map = {item_id: scored_map[item_id] for item_id in kept_ids if item_id in scored_map}
     selected_kept_ids = set(selected_map)
     title_lookup = {operator_id: selected_map[operator_id]["title"] for operator_id in selected_map}
     incoming_support = _incoming_structural_support(selected_kept_ids, operator_map)
@@ -2712,9 +2804,39 @@ def curate_local_wisdom(
                 missing_preconditions=missing_preconditions,
                 missing_slots=missing_slots,
                 env_match_score=float(item["env_match_score"]),
+                predicted_success=float(item.get("predicted_success", 0.5)),
+                confidence=float(item.get("confidence", 0.35)),
+                should_abstain=bool(item.get("should_abstain", False)),
+                abstain_reason=str(item.get("abstain_reason", "")),
+                reliability=item.get("reliability"),
             )
         )
     readiness_summary = dict(Counter(item.status for item in plan_items))
+    top_plan_items = plan_items[: min(3, len(plan_items))]
+    best_confidence = max((item.confidence for item in top_plan_items), default=0.0)
+    best_success = max((item.predicted_success for item in top_plan_items), default=0.0)
+    average_success = (
+        sum(item.predicted_success for item in top_plan_items) / len(top_plan_items)
+        if top_plan_items
+        else 0.0
+    )
+    curation_confidence = round(0.6 * best_confidence + 0.4 * average_success, 6)
+    curation_should_abstain = (
+        not top_plan_items
+        or all(item.should_abstain for item in top_plan_items)
+        or best_confidence < 0.45
+        or best_success < 0.42
+    )
+    if not top_plan_items:
+        curation_abstain_reason = "No operators survived retrieval and conflict filtering."
+    elif all(item.should_abstain for item in top_plan_items):
+        curation_abstain_reason = top_plan_items[0].abstain_reason or "Top candidates should be treated cautiously."
+    elif best_confidence < 0.45:
+        curation_abstain_reason = "Top retrieved operators lack enough calibrated evidence."
+    elif best_success < 0.42:
+        curation_abstain_reason = "No retrieved operator is likely enough to help on this task."
+    else:
+        curation_abstain_reason = ""
     skills: list[SkillRefItem] = []
     seen_skill_names: set[str] = set()
     for item in ordered:
@@ -2739,13 +2861,22 @@ def curate_local_wisdom(
         "Overview: Hybrid seed retrieval, structural expansion, reranking, topological wave planning, and compact context packaging.",
         f"Readiness: {readiness_summary.get('ready', 0)} ready, {readiness_summary.get('blocked', 0)} blocked.",
         f"Seeds: {len(seed_ids)} direct matches. Bundle: {len(plan_items)} operators after structural expansion.",
-        "",
-        "Seed Matches:",
+        (
+            "Reliability: "
+            f"bundle confidence {curation_confidence:.3f}, "
+            f"best predicted success {best_success:.3f}, "
+            f"abstain={'yes' if curation_should_abstain else 'no'}."
+        ),
     ]
+    if curation_should_abstain and curation_abstain_reason:
+        lines.append(f"Abstain Reason: {curation_abstain_reason}")
+    lines.extend(["", "Seed Matches:"])
     seed_plan_items = [item for item in plan_items if item.is_seed]
     if seed_plan_items:
         for item in seed_plan_items:
-            lines.append(f"- {item.title} ({item.score:.3f})")
+            lines.append(
+                f"- {item.title} ({item.score:.3f}, success {item.predicted_success:.3f}, confidence {item.confidence:.3f})"
+            )
     else:
         lines.append("- No direct seeds exceeded the retrieval threshold; using the best structural bundle.")
     lines.extend(
@@ -2772,7 +2903,16 @@ def curate_local_wisdom(
                 lines.append(f"   Missing Slots: {', '.join(item.missing_slots)}")
             if item.conflicts_with:
                 lines.append(f"   Conflicts: {', '.join(title_lookup.get(dep, dep) for dep in item.conflicts_with)}")
-            lines.append(f"   Score: {item.score:.3f} | Env Match: {item.env_match_score:.3f}")
+            empirical_reliability = item.reliability.empirical_reliability if item.reliability else 0.0
+            lines.append(
+                "   Score: "
+                f"{item.score:.3f} | Env Match: {item.env_match_score:.3f} | "
+                f"Predicted Success: {item.predicted_success:.3f} | "
+                f"Confidence: {item.confidence:.3f} | "
+                f"Empirical Reliability: {empirical_reliability:.3f}"
+            )
+            if item.should_abstain and item.abstain_reason:
+                lines.append(f"   Abstain: {item.abstain_reason}")
     curation = "\n".join(lines) + "\n"
     result = WisdomCurateResult(
         session_id=session_id or str(uuid.uuid4()),
@@ -2784,11 +2924,18 @@ def curate_local_wisdom(
                 wisdom_id=item.operator_id,
                 score=float(item.score),
                 is_seed=item.operator_id in seed_ids,
+                predicted_success=float(item.predicted_success),
+                confidence=float(item.confidence),
+                should_abstain=bool(item.should_abstain),
+                abstain_reason=item.abstain_reason,
             )
             for item in plan_items
         ],
         operator_plan=plan_items,
         readiness_summary=readiness_summary,
+        confidence=curation_confidence,
+        should_abstain=curation_should_abstain,
+        abstain_reason=curation_abstain_reason,
         token_count=0,
         cost_usd=0.0,
     )

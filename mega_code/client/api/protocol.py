@@ -13,6 +13,7 @@ __all__ = [
     "TERMINAL_STATUSES",
     "ActivePipelineItem",
     "ActivePipelinesResult",
+    "CausalStepFeedbackItem",
     "EnhanceSkillResult",
     "MegaCodeBaseClient",
     "OperatorPlanItem",
@@ -23,6 +24,7 @@ __all__ = [
     "PipelineStatusResult",
     "PipelineStopResult",
     "ProfileResult",
+    "ReliabilityMetrics",
     "SkillArtifactData",
     "SkillRefItem",
     "TriggerPipelineResult",
@@ -34,7 +36,7 @@ __all__ = [
 ]
 
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -238,6 +240,91 @@ class WisdomResultItem(BaseModel):
     wisdom_id: str = Field(description="Unique identifier of the wisdom record")
     score: float = Field(description="Relevance score from the wisdom graph")
     is_seed: bool = Field(default=False, description="Whether this wisdom is a seed node")
+    predicted_success: float = Field(
+        default=0.5,
+        description="Estimated probability that this wisdom will help on the current task",
+    )
+    confidence: float = Field(
+        default=0.35,
+        description="Confidence in the predicted_success estimate for this wisdom",
+    )
+    should_abstain: bool = Field(
+        default=False,
+        description="Whether the system should avoid recommending this wisdom without more evidence",
+    )
+    abstain_reason: str = Field(
+        default="",
+        description="Short explanation for why the system would abstain on this wisdom",
+    )
+
+
+class ReliabilityMetrics(BaseModel):
+    """Empirical reliability signals attached to a retrieved wisdom item."""
+
+    selection_count: int = Field(default=0, description="Number of reviewed selections for this operator")
+    helped_count: int = Field(default=0, description="Number of times the operator materially helped")
+    hurt_count: int = Field(default=0, description="Number of times the operator caused harm or confusion")
+    unused_count: int = Field(default=0, description="Number of times the operator was retrieved but not used")
+    retrieval_miss_count: int = Field(
+        default=0,
+        description="Number of feedback events that blamed retrieval for selecting or omitting this operator",
+    )
+    execution_miss_count: int = Field(
+        default=0,
+        description="Number of feedback events that blamed execution after this operator was selected",
+    )
+    abstain_count: int = Field(
+        default=0,
+        description="Number of times feedback indicated the system should have abstained",
+    )
+    prior_success: float = Field(
+        default=0.5,
+        description="Evidence-based prior probability that this operator will help before current-task scoring",
+    )
+    confidence: float = Field(
+        default=0.35,
+        description="Confidence in the prior_success estimate based on evidence volume and calibration",
+    )
+    retrieval_precision: float = Field(
+        default=0.5,
+        description="Empirical rate at which retrieved instances of this operator were helpful",
+    )
+    execution_success_rate: float = Field(
+        default=0.5,
+        description="Empirical success rate when this operator was executed or materially followed",
+    )
+    calibration_error: float = Field(
+        default=0.25,
+        description="Mean absolute error between predicted and observed outcomes for this operator",
+    )
+    brier_score: float = Field(
+        default=0.25,
+        description="Mean squared error between predicted and observed outcomes for this operator",
+    )
+    empirical_reliability: float = Field(
+        default=0.0,
+        description="Evidence-weighted trust score derived from calibration and observed usefulness",
+    )
+    abstain_probability: float = Field(
+        default=0.0,
+        description="Probability that the system should abstain from relying on this operator",
+    )
+
+
+class CausalStepFeedbackItem(BaseModel):
+    """Structured per-step feedback for a curated operator."""
+
+    operator_id: str = Field(default="", description="Operator identifier when known")
+    title: str = Field(default="", description="Operator title when operator_id is unavailable")
+    verdict: Literal["helped", "hurt", "unused", "missing"] = Field(
+        default="helped",
+        description="Whether the step helped, hurt, went unused, or was missing from retrieval",
+    )
+    failure_stage: Literal["none", "retrieval", "execution", "mixed", "unknown"] = Field(
+        default="unknown",
+        description="Where the miss occurred for this step",
+    )
+    note: str = Field(default="", description="Optional free-form note about this step")
 
 
 class SkillRefItem(BaseModel):
@@ -276,6 +363,26 @@ class OperatorPlanItem(BaseModel):
     )
     missing_slots: list[str] = Field(default_factory=list, description="Required slots lacking values")
     env_match_score: float = Field(description="Environment fingerprint compatibility score")
+    predicted_success: float = Field(
+        default=0.5,
+        description="Estimated probability that this operator will help on the current task",
+    )
+    confidence: float = Field(
+        default=0.35,
+        description="Confidence in the predicted_success estimate",
+    )
+    should_abstain: bool = Field(
+        default=False,
+        description="Whether the system should abstain instead of strongly recommending this operator",
+    )
+    abstain_reason: str = Field(
+        default="",
+        description="Short rationale for abstaining on this operator",
+    )
+    reliability: ReliabilityMetrics | None = Field(
+        default=None,
+        description="Empirical reliability summary for this operator",
+    )
 
 
 class WisdomCurateResult(BaseModel):
@@ -294,6 +401,18 @@ class WisdomCurateResult(BaseModel):
     readiness_summary: dict[str, int] | None = Field(
         default=None, description="Counts of operators grouped by readiness status"
     )
+    confidence: float = Field(
+        default=0.0,
+        description="Confidence in the top-level curation recommendation bundle",
+    )
+    should_abstain: bool = Field(
+        default=False,
+        description="Whether the system should abstain instead of giving a strong recommendation",
+    )
+    abstain_reason: str = Field(
+        default="",
+        description="Short rationale for abstaining on this curation",
+    )
     token_count: int = Field(default=0, description="Total LLM tokens consumed")
     cost_usd: float = Field(default=0.0, description="Total LLM cost in USD")
 
@@ -304,6 +423,18 @@ class WisdomFeedbackResult(BaseModel):
     session_id: str = Field(description="Session identifier from the curate call")
     feedback_id: str = Field(description="Unique identifier for the submitted feedback")
     status: str = Field(default="saved", description="Feedback submission status")
+    failure_stage: Literal["none", "retrieval", "execution", "mixed", "unknown"] = Field(
+        default="unknown",
+        description="Where the miss was attributed for this feedback event",
+    )
+    applied_steps: int = Field(
+        default=0,
+        description="Number of operator-level causal feedback updates applied",
+    )
+    updated_operator_ids: list[str] = Field(
+        default_factory=list,
+        description="Operator IDs whose reliability metrics were updated",
+    )
 
 
 # Client Protocol
@@ -388,4 +519,7 @@ class MegaCodeBaseClient(Protocol):
         *,
         session_id: str,
         feedback_text: str,
+        failure_stage: Literal["none", "retrieval", "execution", "mixed", "unknown"] = "unknown",
+        should_abstain: bool | None = None,
+        step_feedback: list[CausalStepFeedbackItem] | None = None,
     ) -> WisdomFeedbackResult: ...

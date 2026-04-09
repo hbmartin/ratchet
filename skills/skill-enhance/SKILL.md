@@ -11,8 +11,8 @@ handles test generation, grading, and enhancement; isolated A/B completions run 
 ## Setup
 
 ```bash
-MEGA_DIR="$(cd "${CLAUDE_SKILL_DIR}/../.." && pwd)"
-set -a && . ~/.local/share/mega-code/.env 2>/dev/null && set +a
+MEGA_DIR="${CLAUDE_PLUGIN_ROOT:-$(cat ~/.local/share/mega-code/plugin-root 2>/dev/null)}"
+set -a && . "$MEGA_DIR/.env" 2>/dev/null && set +a
 uv run --directory "$MEGA_DIR" python -m mega_code.client.check_auth
 ```
 

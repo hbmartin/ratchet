@@ -27,7 +27,8 @@ uv run --directory "$MEGA_DIR" mega-code pipeline-status 2>/dev/null || true
 ## Quick Status
 
 ```bash
-ls -la ~/.local/share/mega-code/data/pending-skills/ ~/.local/share/mega-code/data/pending-strategies/ 2>/dev/null || echo "No pending items"
+DATA_DIR="$(uv run --directory "$MEGA_DIR" python -c "from mega_code.client.dirs import data_dir; print(data_dir())")"
+ls -la "$DATA_DIR/data/pending-skills/" "$DATA_DIR/data/pending-strategies/" 2>/dev/null || echo "No pending items"
 ```
 
 ## Detailed Pending Items
@@ -35,8 +36,9 @@ ls -la ~/.local/share/mega-code/data/pending-skills/ ~/.local/share/mega-code/da
 Uses `ls` checks to avoid zsh glob errors on empty directories.
 
 ```bash
-SKILLS_DIR="$HOME/.local/share/mega-code/data/pending-skills"
-STRATS_DIR="$HOME/.local/share/mega-code/data/pending-strategies"
+DATA_DIR="$(uv run --directory "$MEGA_DIR" python -c "from mega_code.client.dirs import data_dir; print(data_dir())")"
+SKILLS_DIR="$DATA_DIR/data/pending-skills"
+STRATS_DIR="$DATA_DIR/data/pending-strategies"
 
 echo "=== Pending Skills ==="
 if [ -d "$SKILLS_DIR" ] && [ "$(ls -A "$SKILLS_DIR" 2>/dev/null)" ]; then

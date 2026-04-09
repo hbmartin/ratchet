@@ -13,6 +13,7 @@ import httpx
 
 from mega_code.client.api.protocol import (
     ActivePipelinesResult,
+    CausalStepFeedbackItem,
     EnhanceSkillResult,
     OutputsResult,
     PipelineStatusResult,
@@ -119,7 +120,7 @@ class MegaCodeLocal:
         }
         if os.name != "nt":
             kwargs["start_new_session"] = True
-        proc = subprocess.Popen(cmd, **kwargs)  # noqa: S603
+        proc = subprocess.Popen(cmd, **kwargs)
         self.store.set_run_pid(run_id, proc.pid)
         await asyncio.sleep(0)
         return result
@@ -187,5 +188,14 @@ class MegaCodeLocal:
         *,
         session_id: str,
         feedback_text: str,
+        failure_stage: str = "unknown",
+        should_abstain: bool | None = None,
+        step_feedback: list[CausalStepFeedbackItem] | None = None,
     ) -> WisdomFeedbackResult:
-        return self.store.save_feedback(session_id, feedback_text)
+        return self.store.save_feedback(
+            session_id,
+            feedback_text,
+            failure_stage=failure_stage,
+            should_abstain=should_abstain,
+            step_feedback=step_feedback,
+        )
