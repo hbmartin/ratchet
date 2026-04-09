@@ -16,6 +16,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, Field, ValidationError
+
 from mega_code.client.api.protocol import (
     OperatorPlanItem,
     OutputsResult,
@@ -60,7 +62,84 @@ class SessionArtifacts:
     pending_skill: PendingSkillData
     pending_strategy: PendingStrategyData
     artifact_payloads: list[dict[str, Any]]
+    pcr_payloads: list[dict[str, Any]]
     operator_payloads: list[dict[str, Any]]
+
+
+@dataclass
+class SessionTrace:
+    turn_set: TurnSet
+    keywords: list[str]
+    dominant_tools: list[str]
+    referenced_paths: list[str]
+    referenced_env_vars: list[str]
+    env_fingerprint: dict[str, Any]
+    descriptor_text: str
+    descriptor_embedding: list[float]
+    steps: list[dict[str, Any]]
+    success_steps: list[dict[str, Any]]
+    error_windows: list[dict[str, Any]]
+    correction_windows: list[dict[str, Any]]
+
+
+@dataclass
+class TraceCluster:
+    cluster_id: str
+    skill_name: str
+    strategy_name: str
+    traces: list[SessionTrace]
+
+
+class _AnalystProposal(BaseModel):
+    target: str
+    title: str
+    rule: str
+    applicability: str
+    evidence_session_ids: list[str] = Field(default_factory=list)
+    support_count: int = 1
+    examples: list[str] = Field(default_factory=list)
+
+
+class _AnalystPass(BaseModel):
+    proposals: list[_AnalystProposal] = Field(default_factory=list)
+
+
+class _WorkflowItem(BaseModel):
+    title: str
+    rule: str
+    evidence_session_ids: list[str] = Field(default_factory=list)
+    support_count: int = 1
+    examples: list[str] = Field(default_factory=list)
+
+
+class _StrategySections(BaseModel):
+    delta_rules: list[str] = Field(default_factory=list)
+    correction_patterns: list[str] = Field(default_factory=list)
+    when_to_retry: list[str] = Field(default_factory=list)
+    when_to_stop: list[str] = Field(default_factory=list)
+    support_signals: list[str] = Field(default_factory=list)
+
+
+class _MemoryFragment(BaseModel):
+    name: str
+    procedure: str
+    context: str
+    resultant: str
+    constraints: str
+    evidence_session_ids: list[str] = Field(default_factory=list)
+    support_count: int = 1
+    kind: str = "success"
+
+
+class _ConsolidatedCluster(BaseModel):
+    summary: str
+    applicability: list[str] = Field(default_factory=list)
+    canonical_workflow: list[_WorkflowItem] = Field(default_factory=list)
+    verification_loop: list[str] = Field(default_factory=list)
+    failure_guards: list[str] = Field(default_factory=list)
+    strategy: _StrategySections = Field(default_factory=_StrategySections)
+    memory_fragments: list[_MemoryFragment] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list)
 
 
 def _tokenize(text: str) -> list[str]:
@@ -93,7 +172,12 @@ def _derive_skill_name(turn_set: TurnSet) -> str:
     return sanitize_name(stem or f"{project_part}-workflow")
 
 
-def _collect_steps(turns: list[Turn]) -> list[dict[str, Any]]:
+def _collect_steps(
+    turns: list[Turn],
+    *,
+    dedupe: bool = True,
+    limit: int | None = 6,
+) -> list[dict[str, Any]]:
     steps: list[dict[str, Any]] = []
     for turn in turns:
         if turn.command:
@@ -104,6 +188,9 @@ def _collect_steps(turns: list[Turn]) -> list[dict[str, Any]]:
                     "turn_id": turn.turn_id,
                     "evidence": _snippet(turn.content or turn.command),
                     "error": turn.is_error,
+                    "command": turn.command,
+                    "tool_name": turn.tool_name,
+                    "tool_target": turn.tool_target,
                 }
             )
         elif turn.tool_name:
@@ -115,6 +202,9 @@ def _collect_steps(turns: list[Turn]) -> list[dict[str, Any]]:
                     "turn_id": turn.turn_id,
                     "evidence": _snippet(turn.content or turn.tool_name),
                     "error": turn.is_error,
+                    "command": turn.command,
+                    "tool_name": turn.tool_name,
+                    "tool_target": turn.tool_target,
                 }
             )
         elif turn.role == "assistant" and turn.content.strip():
@@ -125,29 +215,40 @@ def _collect_steps(turns: list[Turn]) -> list[dict[str, Any]]:
                     "turn_id": turn.turn_id,
                     "evidence": _snippet(turn.content),
                     "error": turn.is_error,
+                    "command": turn.command,
+                    "tool_name": turn.tool_name,
+                    "tool_target": turn.tool_target,
                 }
             )
-    deduped: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for step in steps:
-        key = step["label"].lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(step)
-        if len(deduped) >= 6:
-            break
-    if not deduped:
-        deduped.append(
+    selected = steps
+    if dedupe:
+        deduped: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for step in steps:
+            key = step["label"].lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(step)
+            if limit is not None and len(deduped) >= limit:
+                break
+        selected = deduped
+    elif limit is not None:
+        selected = steps[:limit]
+    if not selected:
+        selected = [
             {
                 "kind": "analysis",
                 "label": "Review the task and implement the requested change.",
                 "turn_id": 0,
                 "evidence": "Derived from the session transcript.",
                 "error": False,
+                "command": None,
+                "tool_name": None,
+                "tool_target": None,
             }
-        )
-    return deduped
+        ]
+    return selected
 
 
 def _build_skill_markdown(turn_set: TurnSet, skill_name: str, steps: list[dict[str, Any]], keywords: list[str]) -> str:
@@ -237,6 +338,1062 @@ def _extract_env_vars(text: str) -> list[str]:
         if value not in deduped:
             deduped.append(value)
     return deduped[:4]
+
+
+def _distinct_strings(values: list[str], *, limit: int | None = None) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = value.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+        if limit is not None and len(result) >= limit:
+            break
+    return result
+
+
+def _first_user_prompt(turn_set: TurnSet) -> str:
+    for turn in turn_set.turns:
+        if turn.role == "user" and turn.content.strip():
+            return _first_sentence(turn.content, turn.content.strip())
+    return "General coding workflow."
+
+
+def _session_descriptor_text(
+    turn_set: TurnSet,
+    *,
+    keywords: list[str],
+    dominant_tools: list[str],
+    referenced_paths: list[str],
+    steps: list[dict[str, Any]],
+) -> str:
+    step_labels = [step["label"] for step in steps[:6]]
+    return " ".join(
+        filter(
+            None,
+            [
+                _first_user_prompt(turn_set),
+                "keywords " + " ".join(keywords[:6]),
+                "tools " + " ".join(dominant_tools[:4]),
+                "paths " + " ".join(referenced_paths[:4]),
+                "steps " + " ".join(step_labels),
+            ],
+        )
+    )
+
+
+def _build_session_trace(turn_set: TurnSet) -> SessionTrace:
+    steps = _collect_steps(turn_set.turns, dedupe=False, limit=None)
+    keywords = _top_keywords(turn_set.turns)
+    tool_counter: Counter[str] = Counter()
+    paths: list[str] = []
+    env_vars: list[str] = []
+    for step in steps:
+        if tool := _command_tool_name(step.get("command"), step.get("tool_name")):
+            tool_counter[tool] += 1
+        paths.extend(_extract_paths(" ".join(filter(None, [step.get("command"), step["label"], step["evidence"]]))))
+        env_vars.extend(_extract_env_vars(" ".join(filter(None, [step.get("command"), step["evidence"], step["label"]]))))
+    dominant_tools = [tool for tool, _count in tool_counter.most_common(6)]
+    referenced_paths = _distinct_strings(paths, limit=8)
+    referenced_env_vars = _distinct_strings(env_vars, limit=8)
+    env_fingerprint = _inspect_project_fingerprint(turn_set.metadata.project_path)
+    env_fingerprint["branch"] = turn_set.metadata.git_branch or ""
+    env_fingerprint["model"] = turn_set.metadata.model_id or ""
+    env_fingerprint["required_tools"] = dominant_tools[:6]
+    env_fingerprint["env_var_presence"] = {
+        env_var: bool(os.environ.get(env_var)) for env_var in referenced_env_vars
+    }
+    error_windows: list[dict[str, Any]] = []
+    correction_windows: list[dict[str, Any]] = []
+    for idx, step in enumerate(steps):
+        if not step["error"]:
+            continue
+        recovery_steps = [item for item in steps[idx + 1 : idx + 4] if not item["error"]]
+        error_windows.append(
+            {
+                "error_step": step,
+                "previous_step": steps[idx - 1] if idx > 0 else None,
+                "recovery_steps": recovery_steps,
+                "session_id": turn_set.session_id,
+            }
+        )
+        if recovery_steps:
+            correction_windows.append(
+                {
+                    "error_step": step,
+                    "recovery_steps": recovery_steps,
+                    "session_id": turn_set.session_id,
+                }
+            )
+    descriptor_text = _session_descriptor_text(
+        turn_set,
+        keywords=keywords,
+        dominant_tools=dominant_tools,
+        referenced_paths=referenced_paths,
+        steps=steps,
+    )
+    return SessionTrace(
+        turn_set=turn_set,
+        keywords=keywords,
+        dominant_tools=dominant_tools,
+        referenced_paths=referenced_paths,
+        referenced_env_vars=referenced_env_vars,
+        env_fingerprint=env_fingerprint,
+        descriptor_text=descriptor_text,
+        descriptor_embedding=[],
+        steps=steps,
+        success_steps=[step for step in steps if not step["error"]],
+        error_windows=error_windows,
+        correction_windows=correction_windows,
+    )
+
+
+def _build_session_traces(turnsets: list[TurnSet], llm: BaseLocalLLM) -> list[SessionTrace]:
+    traces = [_build_session_trace(turn_set) for turn_set in turnsets]
+    if not traces:
+        return []
+    embeddings = llm.embed_documents([trace.descriptor_text for trace in traces])
+    for trace, embedding in zip(traces, embeddings, strict=False):
+        trace.descriptor_embedding = embedding
+    return traces
+
+
+def _jaccard_score(left: list[str], right: list[str]) -> float:
+    left_set = {item for item in left if item}
+    right_set = {item for item in right if item}
+    if not left_set and not right_set:
+        return 0.0
+    return len(left_set.intersection(right_set)) / max(len(left_set.union(right_set)), 1)
+
+
+def _cluster_pair_allowed(left: SessionTrace, right: SessionTrace) -> bool:
+    for key in ("language", "package_manager"):
+        left_value = str(left.env_fingerprint.get(key, "")).strip()
+        right_value = str(right.env_fingerprint.get(key, "")).strip()
+        if left_value and right_value and left_value != right_value:
+            return False
+    return True
+
+
+def _trace_similarity(left: SessionTrace, right: SessionTrace) -> float:
+    if not _cluster_pair_allowed(left, right):
+        return 0.0
+    return round(
+        0.6 * cosine_similarity(left.descriptor_embedding, right.descriptor_embedding)
+        + 0.25 * _jaccard_score(left.dominant_tools, right.dominant_tools)
+        + 0.15 * _jaccard_score(left.referenced_paths, right.referenced_paths),
+        6,
+    )
+
+
+def _cluster_id(session_ids: list[str]) -> str:
+    digest = hashlib.sha256("|".join(sorted(session_ids)).encode("utf-8")).hexdigest()
+    return digest[:12]
+
+
+def _cluster_keywords(traces: list[SessionTrace]) -> list[str]:
+    counter: Counter[str] = Counter()
+    for trace in traces:
+        counter.update(trace.keywords)
+    return [token for token, _count in counter.most_common(8)]
+
+
+def _cluster_skill_name(traces: list[SessionTrace], cluster_id: str) -> str:
+    keywords = _cluster_keywords(traces)
+    project_name = Path(traces[0].turn_set.metadata.project_path or "project").name
+    stem = "-".join(keywords[:3]) if keywords else sanitize_name(project_name) or "workflow"
+    return sanitize_name(f"{stem}-{cluster_id[:8]}")
+
+
+def _connected_components(
+    traces: list[SessionTrace],
+    *,
+    anchor_session_id: str = "",
+) -> list[list[SessionTrace]]:
+    if not traces:
+        return []
+    trace_map = {trace.turn_set.session_id: trace for trace in traces}
+    adjacency: dict[str, set[str]] = {session_id: set() for session_id in trace_map}
+    similarity_cache: dict[tuple[str, str], float] = {}
+    for idx, left in enumerate(traces):
+        for right in traces[idx + 1 :]:
+            similarity = _trace_similarity(left, right)
+            similarity_cache[(left.turn_set.session_id, right.turn_set.session_id)] = similarity
+            threshold = 0.72
+            if anchor_session_id and anchor_session_id in {left.turn_set.session_id, right.turn_set.session_id}:
+                threshold = 0.68
+            if similarity < threshold:
+                continue
+            adjacency[left.turn_set.session_id].add(right.turn_set.session_id)
+            adjacency[right.turn_set.session_id].add(left.turn_set.session_id)
+    visited: set[str] = set()
+    components: list[list[SessionTrace]] = []
+    ordered_ids = sorted(
+        trace_map,
+        key=lambda session_id: (
+            0 if session_id == anchor_session_id else 1,
+            session_id,
+        ),
+    )
+    for session_id in ordered_ids:
+        if session_id in visited:
+            continue
+        stack = [session_id]
+        component_ids: list[str] = []
+        while stack:
+            current = stack.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            component_ids.append(current)
+            stack.extend(sorted(adjacency[current] - visited, reverse=True))
+        component_ids.sort(key=lambda value: (0 if value == anchor_session_id else 1, value))
+        components.append([trace_map[item] for item in component_ids])
+    components.sort(
+        key=lambda component: (
+            0 if any(trace.turn_set.session_id == anchor_session_id for trace in component) else 1,
+            -len(component),
+            component[0].turn_set.session_id,
+        )
+    )
+    return components
+
+
+def _cluster_traces(
+    traces: list[SessionTrace],
+    *,
+    anchor_session_id: str = "",
+) -> list[TraceCluster]:
+    if not traces:
+        return []
+    if anchor_session_id:
+        anchor = next((trace for trace in traces if trace.turn_set.session_id == anchor_session_id), None)
+        if anchor is None:
+            raise ValueError(f"Anchor session {anchor_session_id} is not available for clustering.")
+        neighbors = [
+            (other, _trace_similarity(anchor, other))
+            for other in traces
+            if other.turn_set.session_id != anchor_session_id
+        ]
+        neighbors = [(trace, score) for trace, score in neighbors if score >= 0.68]
+        neighbors.sort(
+            key=lambda item: (
+                -item[1],
+                item[0].turn_set.metadata.started_at.isoformat() if item[0].turn_set.metadata.started_at else "",
+                item[0].turn_set.session_id,
+            )
+        )
+        selected_ids = {anchor_session_id, *(trace.turn_set.session_id for trace, _score in neighbors[:4])}
+        traces = [trace for trace in traces if trace.turn_set.session_id in selected_ids]
+    clusters: list[TraceCluster] = []
+    for component in _connected_components(traces, anchor_session_id=anchor_session_id):
+        session_ids = [trace.turn_set.session_id for trace in component]
+        cluster_id = _cluster_id(session_ids)
+        skill_name = _cluster_skill_name(component, cluster_id)
+        clusters.append(
+            TraceCluster(
+                cluster_id=cluster_id,
+                skill_name=skill_name,
+                strategy_name=f"{skill_name}-strategy",
+                traces=component,
+            )
+        )
+    if anchor_session_id:
+        return [
+            cluster
+            for cluster in clusters
+            if any(trace.turn_set.session_id == anchor_session_id for trace in cluster.traces)
+        ][:1]
+    return clusters
+
+
+def _cluster_applicability(cluster: TraceCluster) -> str:
+    primary = cluster.traces[0]
+    language = primary.env_fingerprint.get("language") or "local"
+    package_manager = primary.env_fingerprint.get("package_manager") or "default tools"
+    frameworks = ", ".join(primary.env_fingerprint.get("frameworks", []))
+    if frameworks:
+        return f"Use for {language} workflows in {frameworks} projects with {package_manager}."
+    return f"Use for {language} project workflows with {package_manager} and the same repo-local toolchain."
+
+
+def _success_target(step: dict[str, Any]) -> str:
+    command = (step.get("command") or "").strip().lower()
+    label = step["label"].lower()
+    if command.startswith(
+        (
+            "pytest",
+            "pnpm exec eslint",
+            "pnpm exec vitest",
+            "pnpm test",
+            "npm test",
+            "yarn test",
+            "bun test",
+            "cargo test",
+            "go test",
+            "uv run pytest",
+        )
+    ):
+        return "verification_loop"
+    if any(token in label for token in ("verify", "validation", "lint", "check", "run the auth tests")):
+        return "verification_loop"
+    return "canonical_workflow"
+
+
+def _bucket_candidates(
+    items: list[dict[str, Any]],
+    *,
+    cluster: TraceCluster,
+    fallback_target: str,
+) -> list[dict[str, Any]]:
+    buckets: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in items:
+        key = (item["target"], item["title"])
+        bucket = buckets.setdefault(
+            key,
+            {
+                "target": item["target"],
+                "title": item["title"],
+                "rule": item["rule"],
+                "applicability": item.get("applicability") or _cluster_applicability(cluster),
+                "evidence_session_ids": set(),
+                "examples": [],
+                "representative_step": item.get("representative_step"),
+                "kind": item.get("kind", fallback_target),
+                "command": item.get("command"),
+                "tool_name": item.get("tool_name"),
+                "tool_target": item.get("tool_target"),
+            },
+        )
+        bucket["evidence_session_ids"].update(item.get("evidence_session_ids", []))
+        bucket["examples"].extend(item.get("examples", []))
+    results: list[dict[str, Any]] = []
+    for bucket in buckets.values():
+        evidence_session_ids = sorted(bucket["evidence_session_ids"])
+        results.append(
+            {
+                **bucket,
+                "evidence_session_ids": evidence_session_ids,
+                "support_count": max(len(evidence_session_ids), 1),
+                "examples": _distinct_strings(bucket["examples"], limit=3),
+            }
+        )
+    results.sort(key=lambda item: (-item["support_count"], item["title"]))
+    return results
+
+
+def _success_seed_candidates(cluster: TraceCluster) -> list[dict[str, Any]]:
+    raw_candidates: list[dict[str, Any]] = []
+    for trace in cluster.traces:
+        for step in trace.success_steps:
+            raw_candidates.append(
+                {
+                    "target": _success_target(step),
+                    "title": step["label"],
+                    "rule": _step_procedure_text(step),
+                    "applicability": _cluster_applicability(cluster),
+                    "evidence_session_ids": [trace.turn_set.session_id],
+                    "examples": [step["evidence"]],
+                    "representative_step": step,
+                    "kind": step["kind"],
+                    "command": step.get("command"),
+                    "tool_name": step.get("tool_name"),
+                    "tool_target": step.get("tool_target"),
+                }
+            )
+    candidates = _bucket_candidates(raw_candidates, cluster=cluster, fallback_target="canonical_workflow")
+    return candidates[: max(8, len(cluster.traces) * 3)]
+
+
+def _correction_title(window: dict[str, Any]) -> str:
+    recovery_steps = window.get("recovery_steps", [])
+    lowered = " ".join(step["label"].lower() for step in recovery_steps)
+    if any(token in lowered for token in ("inspect", "review", "check")):
+        return "Inspect failing output before retrying"
+    if any(token in lowered for token in ("search", "rg", "read")):
+        return "Search the affected code before retrying"
+    return "Recover with new evidence before retrying"
+
+
+def _error_seed_candidates(cluster: TraceCluster) -> list[dict[str, Any]]:
+    raw_candidates: list[dict[str, Any]] = []
+    for trace in cluster.traces:
+        for window in trace.correction_windows:
+            error_step = window["error_step"]
+            title = _correction_title(window)
+            recovery_titles = [step["label"] for step in window["recovery_steps"][:2]]
+            recovery_text = " then ".join(recovery_titles) if recovery_titles else "inspect the latest evidence"
+            raw_candidates.append(
+                {
+                    "target": "correction_patterns",
+                    "title": title,
+                    "rule": f"When `{error_step['label']}` fails, {recovery_text} before retrying the workflow.",
+                    "applicability": _cluster_applicability(cluster),
+                    "evidence_session_ids": [trace.turn_set.session_id],
+                    "examples": [error_step["evidence"], *(step["evidence"] for step in window["recovery_steps"][:2])],
+                    "representative_step": window["recovery_steps"][0] if window["recovery_steps"] else error_step,
+                    "kind": "analysis",
+                    "command": None,
+                    "tool_name": None,
+                    "tool_target": None,
+                }
+            )
+            raw_candidates.append(
+                {
+                    "target": "when_to_retry",
+                    "title": f"Retry only after new evidence from `{error_step['label']}`",
+                    "rule": f"Retry `{error_step['label']}` only after inspection or search yields a concrete next action.",
+                    "applicability": _cluster_applicability(cluster),
+                    "evidence_session_ids": [trace.turn_set.session_id],
+                    "examples": [error_step["evidence"]],
+                }
+            )
+        for window in trace.error_windows:
+            error_step = window["error_step"]
+            raw_candidates.append(
+                {
+                    "target": "failure_guards",
+                    "title": f"Do not continue past `{error_step['label']}` failures",
+                    "rule": f"Do not advance the workflow after `{error_step['label']}` fails without new evidence or a fix.",
+                    "applicability": _cluster_applicability(cluster),
+                    "evidence_session_ids": [trace.turn_set.session_id],
+                    "examples": [error_step["evidence"]],
+                    "representative_step": error_step,
+                    "kind": error_step["kind"],
+                    "command": error_step.get("command"),
+                    "tool_name": error_step.get("tool_name"),
+                    "tool_target": error_step.get("tool_target"),
+                }
+            )
+            if not window["recovery_steps"]:
+                raw_candidates.append(
+                    {
+                        "target": "when_to_stop",
+                        "title": f"Stop repeating `{error_step['label']}` without change",
+                        "rule": f"Stop retrying `{error_step['label']}` when the same failure repeats without any new observation.",
+                        "applicability": _cluster_applicability(cluster),
+                        "evidence_session_ids": [trace.turn_set.session_id],
+                        "examples": [error_step["evidence"]],
+                    }
+                )
+    candidates = _bucket_candidates(raw_candidates, cluster=cluster, fallback_target="failure_guards")
+    return candidates[: max(8, len(cluster.traces) * 4)]
+
+
+def _prompt_payload(marker: str, payload: dict[str, Any], schema_hint: str) -> str:
+    return (
+        f"MEGA_CODE_JSON_PASS::{marker}\n"
+        "Return strict JSON only. Do not include Markdown, prose, or code fences.\n"
+        f"Schema: {schema_hint}\n"
+        "PAYLOAD_JSON_START\n"
+        f"{json.dumps(payload, indent=2, sort_keys=True)}\n"
+        "PAYLOAD_JSON_END\n"
+    )
+
+
+def _parse_llm_json(raw_text: str, label: str, model_cls: type[BaseModel]) -> BaseModel:
+    try:
+        return model_cls.model_validate_json(raw_text)
+    except ValidationError as exc:
+        raise ValueError(f"{label} returned schema-invalid JSON: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{label} returned invalid JSON: {exc}") from exc
+
+
+def _proposal_lookup_key(target: str, title: str) -> tuple[str, str]:
+    normalized = " ".join(_tokenize(title)) or title.strip().lower()
+    return target, normalized
+
+
+def _run_analyst_pass(
+    *,
+    llm: BaseLocalLLM,
+    marker: str,
+    cluster: TraceCluster,
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    stripped_candidates = [
+        {
+            "target": item["target"],
+            "title": item["title"],
+            "rule": item["rule"],
+            "applicability": item["applicability"],
+            "evidence_session_ids": item["evidence_session_ids"],
+            "support_count": item["support_count"],
+            "examples": item["examples"],
+        }
+        for item in candidates
+    ]
+    prompt = _prompt_payload(
+        marker,
+        {
+            "cluster_id": cluster.cluster_id,
+            "member_session_ids": [trace.turn_set.session_id for trace in cluster.traces],
+            "keywords": _cluster_keywords(cluster.traces),
+            "candidates": stripped_candidates,
+        },
+        '{"proposals":[{"target":"...","title":"...","rule":"...","applicability":"...","evidence_session_ids":["..."],"support_count":1,"examples":["..."]}]}',
+    )
+    result = _parse_llm_json(llm.generate_text(prompt), marker, _AnalystPass)
+    candidate_map = {
+        _proposal_lookup_key(item["target"], item["title"]): item
+        for item in candidates
+    }
+    proposals: list[dict[str, Any]] = []
+    for proposal in result.proposals:
+        payload = proposal.model_dump()
+        if source := candidate_map.get(_proposal_lookup_key(payload["target"], payload["title"])):
+            payload.update(
+                {
+                    "representative_step": source.get("representative_step"),
+                    "kind": source.get("kind", "analysis"),
+                    "command": source.get("command"),
+                    "tool_name": source.get("tool_name"),
+                    "tool_target": source.get("tool_target"),
+                }
+            )
+        proposals.append(payload)
+    return proposals
+
+
+def _group_proposals(proposals: list[dict[str, Any]], llm: BaseLocalLLM) -> list[dict[str, Any]]:
+    if not proposals:
+        return []
+    embeddings = llm.embed_documents([f"{item['target']} {item['title']} {item['rule']}" for item in proposals])
+    ranked_indexes = sorted(
+        range(len(proposals)),
+        key=lambda idx: (-int(proposals[idx].get("support_count", 1)), proposals[idx]["title"]),
+    )
+    assigned: set[int] = set()
+    groups: list[dict[str, Any]] = []
+    for idx in ranked_indexes:
+        if idx in assigned:
+            continue
+        primary = proposals[idx]
+        group_indexes = [idx]
+        assigned.add(idx)
+        for other_idx in ranked_indexes:
+            if other_idx in assigned:
+                continue
+            other = proposals[other_idx]
+            if primary["target"] != other["target"]:
+                continue
+            same_title = _proposal_lookup_key(primary["target"], primary["title"]) == _proposal_lookup_key(
+                other["target"], other["title"]
+            )
+            if same_title or cosine_similarity(embeddings[idx], embeddings[other_idx]) >= 0.84:
+                group_indexes.append(other_idx)
+                assigned.add(other_idx)
+        grouped_items = [proposals[item_idx] for item_idx in group_indexes]
+        grouped_items.sort(
+            key=lambda item: (-int(item.get("support_count", 1)), -len(item["rule"]), item["title"])
+        )
+        representative = grouped_items[0]
+        evidence_ids = _distinct_strings(
+            [session_id for item in grouped_items for session_id in item.get("evidence_session_ids", [])]
+        )
+        groups.append(
+            {
+                **representative,
+                "evidence_session_ids": evidence_ids,
+                "support_count": max(len(evidence_ids), max(int(item.get("support_count", 1)) for item in grouped_items)),
+                "examples": _distinct_strings(
+                    [example for item in grouped_items for example in item.get("examples", [])],
+                    limit=4,
+                ),
+            }
+        )
+    groups.sort(key=lambda item: (-int(item.get("support_count", 1)), item["target"], item["title"]))
+    return groups
+
+
+def _default_memory_fragments(grouped_proposals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    fragments: list[dict[str, Any]] = []
+    for proposal in grouped_proposals:
+        kind = "error" if proposal["target"] in {"failure_guards", "correction_patterns", "when_to_retry", "when_to_stop"} else "success"
+        fragments.append(
+            {
+                "name": proposal["title"],
+                "procedure": proposal["rule"],
+                "context": proposal["applicability"],
+                "resultant": "Apply the repeated workflow reliably." if kind == "success" else "Avoid repeating the same failure pattern.",
+                "constraints": "Ground the action in observed evidence from related sessions.",
+                "evidence_session_ids": proposal.get("evidence_session_ids", []),
+                "support_count": proposal.get("support_count", 1),
+                "kind": kind,
+            }
+        )
+    return fragments
+
+
+def _run_consolidator_pass(
+    *,
+    llm: BaseLocalLLM,
+    cluster: TraceCluster,
+    grouped_proposals: list[dict[str, Any]],
+) -> _ConsolidatedCluster:
+    primary = cluster.traces[0]
+    prompt = _prompt_payload(
+        "CONSOLIDATOR",
+        {
+            "cluster_id": cluster.cluster_id,
+            "skill_name": cluster.skill_name,
+            "member_session_ids": [trace.turn_set.session_id for trace in cluster.traces],
+            "keywords": _cluster_keywords(cluster.traces),
+            "dominant_tools": _distinct_strings(
+                [tool for trace in cluster.traces for tool in trace.dominant_tools],
+                limit=8,
+            ),
+            "applicability_hints": [
+                _cluster_applicability(cluster),
+                f"Primary task pattern: {_first_user_prompt(primary.turn_set)}",
+            ],
+            "grouped_proposals": [
+                {
+                    "target": item["target"],
+                    "title": item["title"],
+                    "rule": item["rule"],
+                    "applicability": item["applicability"],
+                    "evidence_session_ids": item["evidence_session_ids"],
+                    "support_count": item["support_count"],
+                    "examples": item["examples"],
+                }
+                for item in grouped_proposals
+            ],
+        },
+        '{"summary":"...","applicability":["..."],"canonical_workflow":[{"title":"...","rule":"...","evidence_session_ids":["..."],"support_count":1,"examples":["..."]}],"verification_loop":["..."],"failure_guards":["..."],"strategy":{"delta_rules":["..."],"correction_patterns":["..."],"when_to_retry":["..."],"when_to_stop":["..."],"support_signals":["..."]},"memory_fragments":[{"name":"...","procedure":"...","context":"...","resultant":"...","constraints":"...","evidence_session_ids":["..."],"support_count":1,"kind":"success"}],"keywords":["..."]}',
+    )
+    result = _parse_llm_json(llm.generate_text(prompt), "CONSOLIDATOR", _ConsolidatedCluster)
+    consolidated = result.model_copy(deep=True)
+    if not consolidated.applicability:
+        consolidated.applicability = [_cluster_applicability(cluster)]
+    if not consolidated.canonical_workflow:
+        consolidated.canonical_workflow = [
+            _WorkflowItem(
+                title=item["title"],
+                rule=item["rule"],
+                evidence_session_ids=item.get("evidence_session_ids", []),
+                support_count=item.get("support_count", 1),
+                examples=item.get("examples", []),
+            )
+            for item in grouped_proposals
+            if item["target"] == "canonical_workflow"
+        ][:6]
+    if not consolidated.memory_fragments:
+        consolidated.memory_fragments = [_MemoryFragment.model_validate(item) for item in _default_memory_fragments(grouped_proposals)]
+    if not consolidated.keywords:
+        consolidated.keywords = _cluster_keywords(cluster.traces)
+    return consolidated
+
+
+def _cluster_env_fingerprint(cluster: TraceCluster) -> dict[str, Any]:
+    primary = cluster.traces[0]
+    language = next((trace.env_fingerprint.get("language") for trace in cluster.traces if trace.env_fingerprint.get("language")), "")
+    package_manager = next(
+        (trace.env_fingerprint.get("package_manager") for trace in cluster.traces if trace.env_fingerprint.get("package_manager")),
+        "",
+    )
+    branch_counts: Counter[str] = Counter(
+        trace.env_fingerprint.get("branch", "") for trace in cluster.traces if trace.env_fingerprint.get("branch")
+    )
+    model_counts: Counter[str] = Counter(
+        trace.env_fingerprint.get("model", "") for trace in cluster.traces if trace.env_fingerprint.get("model")
+    )
+    frameworks = _distinct_strings(
+        [framework for trace in cluster.traces for framework in trace.env_fingerprint.get("frameworks", [])],
+        limit=6,
+    )
+    env_vars = _distinct_strings(
+        [env_var for trace in cluster.traces for env_var in trace.referenced_env_vars],
+        limit=8,
+    )
+    return {
+        "project_path": primary.turn_set.metadata.project_path or "",
+        "language": language or primary.env_fingerprint.get("language", ""),
+        "frameworks": frameworks,
+        "package_manager": package_manager or primary.env_fingerprint.get("package_manager", ""),
+        "branch": branch_counts.most_common(1)[0][0] if branch_counts else primary.env_fingerprint.get("branch", ""),
+        "model": model_counts.most_common(1)[0][0] if model_counts else primary.env_fingerprint.get("model", ""),
+        "required_tools": _distinct_strings(
+            [tool for trace in cluster.traces for tool in trace.dominant_tools],
+            limit=8,
+        ),
+        "env_var_presence": {env_var: bool(os.environ.get(env_var)) for env_var in env_vars},
+    }
+
+
+def _workflow_step_lookup(grouped_proposals: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
+    lookup: dict[tuple[str, str], dict[str, Any]] = {}
+    for proposal in grouped_proposals:
+        lookup[_proposal_lookup_key("canonical_workflow", proposal["title"])] = proposal
+        lookup[_proposal_lookup_key(proposal["target"], proposal["title"])] = proposal
+    return lookup
+
+
+def _operator_steps_from_consolidated(
+    consolidated: _ConsolidatedCluster,
+    grouped_proposals: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    lookup = _workflow_step_lookup(grouped_proposals)
+    steps: list[dict[str, Any]] = []
+    for item in consolidated.canonical_workflow[:8]:
+        candidate = lookup.get(_proposal_lookup_key("canonical_workflow", item.title)) or lookup.get(
+            _proposal_lookup_key("verification_loop", item.title)
+        )
+        representative = candidate or {}
+        step = representative.get("representative_step") or {}
+        steps.append(
+            {
+                "kind": step.get("kind", "analysis"),
+                "label": item.title,
+                "turn_id": 0,
+                "evidence": item.examples[0] if item.examples else step.get("evidence", item.rule),
+                "error": False,
+                "command": representative.get("command") or step.get("command"),
+                "tool_name": representative.get("tool_name") or step.get("tool_name"),
+                "tool_target": representative.get("tool_target") or step.get("tool_target"),
+            }
+        )
+    if not steps:
+        steps.append(
+            {
+                "kind": "analysis",
+                "label": "Review the clustered workflow before making changes.",
+                "turn_id": 0,
+                "evidence": "Derived from repeated project trajectories.",
+                "error": False,
+                "command": None,
+                "tool_name": None,
+                "tool_target": None,
+            }
+        )
+    return steps
+
+
+def _cluster_evidence_items(cluster: TraceCluster, grouped_proposals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    proposal_titles = [proposal["title"] for proposal in grouped_proposals[:6]]
+    items: list[dict[str, Any]] = []
+    for trace in cluster.traces:
+        items.append(
+            {
+                "session_id": trace.turn_set.session_id,
+                "prompt": _first_user_prompt(trace.turn_set),
+                "dominant_tools": trace.dominant_tools[:4],
+                "referenced_paths": trace.referenced_paths[:4],
+                "error_count": len(trace.error_windows),
+                "correction_count": len(trace.correction_windows),
+                "evidence": proposal_titles[:4],
+            }
+        )
+    return items
+
+
+def _build_cluster_skill_markdown(
+    *,
+    cluster: TraceCluster,
+    consolidated: _ConsolidatedCluster,
+    keywords: list[str],
+    metadata: dict[str, Any],
+) -> str:
+    project_name = Path(cluster.traces[0].turn_set.metadata.project_path or "project").name
+    body_lines = [
+        "---",
+        f"name: {cluster.skill_name}",
+        f'description: "Clustered workflow distilled from {len(cluster.traces)} related sessions for {project_name}."',
+        "metadata:",
+        f"  tags: [{', '.join(keywords[:4])}]",
+        f'  author: "{get_author()}"',
+        f'  version: "{DEFAULT_VERSION}"',
+        f'  generated_at: "{datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}"',
+        f'  cluster_id: "{cluster.cluster_id}"',
+        "---",
+        "",
+        "# Summary",
+        consolidated.summary,
+        "",
+        "## Applicability",
+    ]
+    body_lines.extend(f"- {item}" for item in consolidated.applicability)
+    body_lines.extend(["", "## Canonical Workflow"])
+    for idx, item in enumerate(consolidated.canonical_workflow, 1):
+        support = ", ".join(item.evidence_session_ids[:3]) or "cluster"
+        body_lines.append(f"{idx}. {item.title}")
+        body_lines.append(f"   Rule: {item.rule}")
+        body_lines.append(f"   Support: {item.support_count} sessions ({support})")
+        if item.examples:
+            body_lines.append(f"   Example: {item.examples[0]}")
+    body_lines.extend(["", "## Verification Loop"])
+    if consolidated.verification_loop:
+        body_lines.extend(f"- {item}" for item in consolidated.verification_loop)
+    else:
+        body_lines.append("- Verify each material change before finalizing.")
+    body_lines.extend(["", "## Failure Guards"])
+    if consolidated.failure_guards:
+        body_lines.extend(f"- {item}" for item in consolidated.failure_guards)
+    else:
+        body_lines.append("- Stop when the workflow stops producing new evidence.")
+    body_lines.extend(
+        [
+            "",
+            "## Cluster Evidence",
+            f"- Sessions: {', '.join(metadata['member_session_ids'])}",
+            f"- Dominant tools: {', '.join(metadata['dominant_tools']) or 'none'}",
+            f"- Error rate: {metadata['error_rate']:.3f}",
+            f"- Corrections observed: {metadata['correction_count']}",
+        ]
+    )
+    return "\n".join(body_lines) + "\n"
+
+
+def _build_cluster_strategy_markdown(
+    *,
+    cluster: TraceCluster,
+    consolidated: _ConsolidatedCluster,
+    metadata: dict[str, Any],
+) -> str:
+    heading = f"# {cluster.skill_name.replace('-', ' ').title()} Strategy"
+    lines = [heading, "", "## Delta Rules"]
+    delta_rules = _distinct_strings(consolidated.strategy.delta_rules, limit=8)
+    if delta_rules:
+        lines.extend(f"- {item}" for item in delta_rules)
+    else:
+        lines.append("- Preserve the clustered workflow and only retry after new evidence appears.")
+    lines.extend(["", "## Correction Patterns"])
+    if consolidated.strategy.correction_patterns:
+        lines.extend(f"- {item}" for item in consolidated.strategy.correction_patterns)
+    else:
+        lines.append("- Inspect the latest failure evidence before patching again.")
+    lines.extend(["", "## When To Retry"])
+    if consolidated.strategy.when_to_retry:
+        lines.extend(f"- {item}" for item in consolidated.strategy.when_to_retry)
+    else:
+        lines.append("- Retry after inspection produces a concrete next step.")
+    lines.extend(["", "## When To Stop"])
+    if consolidated.strategy.when_to_stop:
+        lines.extend(f"- {item}" for item in consolidated.strategy.when_to_stop)
+    else:
+        lines.append("- Stop repeating the same action when it produces no new evidence.")
+    lines.extend(["", "## Support Signals"])
+    support_signals = consolidated.strategy.support_signals or consolidated.verification_loop
+    if support_signals:
+        lines.extend(f"- {item}" for item in support_signals)
+    else:
+        lines.append("- Use the project verification command as the readiness signal.")
+    lines.extend(
+        [
+            "",
+            "## Cluster Evidence",
+            f"- Cluster: `{cluster.cluster_id}`",
+            f"- Sessions: {len(cluster.traces)}",
+            f"- Corrections observed: {metadata['correction_count']}",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _build_pcr_payloads(
+    *,
+    llm: BaseLocalLLM,
+    cluster: TraceCluster,
+    artifact_id: str,
+    skill_name: str,
+    memory_fragments: list[_MemoryFragment],
+) -> list[dict[str, Any]]:
+    if not memory_fragments:
+        return []
+    lexical_texts = [
+        " ".join(
+            [
+                fragment.name,
+                fragment.procedure,
+                fragment.context,
+                fragment.resultant,
+                fragment.constraints,
+                skill_name,
+            ]
+        )
+        for fragment in memory_fragments
+    ]
+    embeddings = llm.embed_documents(lexical_texts)
+    payloads: list[dict[str, Any]] = []
+    for idx, fragment in enumerate(memory_fragments, 1):
+        payloads.append(
+            {
+                "fragment_id": _stable_id(artifact_id, "fragment", idx, fragment.name),
+                "artifact_id": artifact_id,
+                "name": fragment.name,
+                "procedure": fragment.procedure,
+                "context": fragment.context,
+                "resultant": fragment.resultant,
+                "constraints": fragment.constraints,
+                "evidence_refs": [{"session_id": session_id} for session_id in fragment.evidence_session_ids],
+                "source_artifact": skill_name,
+                "dependency_ids": [],
+                "feedback_score": 0.0,
+                "created_at": utcnow_iso(),
+                "embedding": embeddings[idx - 1],
+                "lexical_text": lexical_texts[idx - 1],
+            }
+        )
+    return payloads
+
+
+def distill_cluster(
+    *,
+    run_id: str,
+    project_id: str,
+    cluster: TraceCluster,
+    llm: BaseLocalLLM,
+    store: LocalStore,
+) -> SessionArtifacts:
+    keywords = _cluster_keywords(cluster.traces)
+    success_candidates = _success_seed_candidates(cluster)
+    error_candidates = _error_seed_candidates(cluster)
+    success_proposals = _run_analyst_pass(
+        llm=llm,
+        marker="SUCCESS_ANALYST",
+        cluster=cluster,
+        candidates=success_candidates,
+    )
+    error_proposals = _run_analyst_pass(
+        llm=llm,
+        marker="ERROR_ANALYST",
+        cluster=cluster,
+        candidates=error_candidates,
+    )
+    grouped_proposals = _group_proposals([*success_proposals, *error_proposals], llm)
+    consolidated = _run_consolidator_pass(llm=llm, cluster=cluster, grouped_proposals=grouped_proposals)
+    env_fingerprint = _cluster_env_fingerprint(cluster)
+    error_count = sum(len(trace.error_windows) for trace in cluster.traces)
+    total_steps = sum(len(trace.steps) for trace in cluster.traces) or 1
+    correction_count = sum(len(trace.correction_windows) for trace in cluster.traces)
+    metadata = {
+        "generated_at": utcnow_iso(),
+        "workflow": {
+            "domains": keywords[:4],
+            "cluster_id": cluster.cluster_id,
+        },
+        "pcr_model": "procedure-context-resultant",
+        "cluster_id": cluster.cluster_id,
+        "member_session_ids": [trace.turn_set.session_id for trace in cluster.traces],
+        "support_count": len(cluster.traces),
+        "error_rate": round(error_count / total_steps, 6),
+        "correction_count": correction_count,
+        "dominant_tools": _distinct_strings(
+            [tool for trace in cluster.traces for tool in trace.dominant_tools],
+            limit=8,
+        ),
+        "analyst_summaries": {
+            "success_titles": [item["title"] for item in success_proposals[:4]],
+            "error_titles": [item["title"] for item in error_proposals[:4]],
+            "grouped_titles": [item["title"] for item in grouped_proposals[:6]],
+        },
+    }
+    skill_md = _build_cluster_skill_markdown(
+        cluster=cluster,
+        consolidated=consolidated,
+        keywords=keywords,
+        metadata=metadata,
+    )
+    strategy_md = _build_cluster_strategy_markdown(
+        cluster=cluster,
+        consolidated=consolidated,
+        metadata=metadata,
+    )
+    evidence_items = _cluster_evidence_items(cluster, grouped_proposals)
+    injection_rules = {
+        "mode": "local",
+        "cluster_id": cluster.cluster_id,
+        "trigger_keywords": keywords[:6],
+        "project_path": cluster.traces[0].turn_set.metadata.project_path or "",
+    }
+    artifact_embedding = llm.embed_documents([skill_md + "\n" + strategy_md])[0]
+    skill_artifact_id = _artifact_id(run_id, cluster.cluster_id, "skill", cluster.skill_name)
+    skill_source_path = store.write_source_tree(
+        artifact_type="skill",
+        name=cluster.skill_name,
+        content=skill_md,
+    )
+    strategy_artifact_id = _artifact_id(run_id, cluster.cluster_id, "strategy", cluster.strategy_name)
+    strategy_source_path = store.write_source_tree(
+        artifact_type="strategy",
+        name=cluster.strategy_name,
+        content=strategy_md,
+    )
+    pending_skill = PendingSkillData(
+        skill_name=cluster.skill_name,
+        skill_md=skill_md,
+        injection_rules=json.dumps(injection_rules, indent=2),
+        evidence=json.dumps(evidence_items, indent=2),
+        metadata=json.dumps(metadata, indent=2),
+        author=get_author(),
+        version=DEFAULT_VERSION,
+        tags=keywords[:4],
+    )
+    pending_strategy = PendingStrategyData(
+        strategy_name=cluster.strategy_name,
+        content=strategy_md,
+        category="local-runtime",
+        author=get_author(),
+        version=DEFAULT_VERSION,
+        tags=keywords[:4],
+    )
+    artifact_payloads = [
+        {
+            "artifact_id": skill_artifact_id,
+            "artifact_type": "skill",
+            "name": cluster.skill_name,
+            "version": DEFAULT_VERSION,
+            "content": skill_md,
+            "metadata": metadata,
+            "source_path": skill_source_path,
+            "session_id": cluster.cluster_id,
+            "created_at": utcnow_iso(),
+            "embedding": artifact_embedding,
+        },
+        {
+            "artifact_id": strategy_artifact_id,
+            "artifact_type": "strategy",
+            "name": cluster.strategy_name,
+            "version": DEFAULT_VERSION,
+            "content": strategy_md,
+            "metadata": metadata,
+            "source_path": strategy_source_path,
+            "session_id": cluster.cluster_id,
+            "created_at": utcnow_iso(),
+            "embedding": artifact_embedding,
+        },
+    ]
+    pcr_payloads = _build_pcr_payloads(
+        llm=llm,
+        cluster=cluster,
+        artifact_id=skill_artifact_id,
+        skill_name=cluster.skill_name,
+        memory_fragments=consolidated.memory_fragments,
+    )
+    operator_steps = _operator_steps_from_consolidated(consolidated, grouped_proposals)
+    context_text = _build_context_text(cluster.traces[0].turn_set, env_fingerprint)
+    operator_payloads = _operator_payloads(
+        run_id=run_id,
+        project_id=project_id,
+        session_id=cluster.traces[0].turn_set.session_id,
+        artifact_id=skill_artifact_id,
+        skill_name=cluster.skill_name,
+        turn_set=cluster.traces[0].turn_set,
+        steps=operator_steps,
+        llm=llm,
+        context_text=context_text,
+        env_fingerprint=env_fingerprint,
+    )
+    return SessionArtifacts(
+        pending_skill=pending_skill,
+        pending_strategy=pending_strategy,
+        artifact_payloads=artifact_payloads,
+        pcr_payloads=pcr_payloads,
+        operator_payloads=operator_payloads,
+    )
 
 
 def _command_tool_name(command: str | None, tool_name: str | None = None) -> str:
@@ -801,6 +1958,7 @@ def distill_session(
         pending_skill=pending_skill,
         pending_strategy=pending_strategy,
         artifact_payloads=artifact_payloads,
+        pcr_payloads=[],
         operator_payloads=operator_payloads,
     )
 
@@ -826,7 +1984,24 @@ def load_turnsets_for_run(config: dict[str, Any], *, store: LocalStore) -> list[
     include_codex = bool(config.get("include_codex"))
     limit = config.get("limit_value")
     if session_id:
-        return [_load_turnset_from_session_id(session_id, store)]
+        anchor = _load_turnset_from_session_id(session_id, store)
+        related_turnsets = [anchor]
+        anchor_project_path = anchor.metadata.project_path or project_path
+        if anchor_project_path:
+            sessions = load_sessions_from_project(
+                Path(anchor_project_path),
+                include_claude=include_claude,
+                include_codex=include_codex,
+                limit=limit,
+            )
+            seen = {anchor.session_id}
+            for session in sessions:
+                turn_set = _session_to_turnset(session)
+                if turn_set is None or turn_set.session_id in seen:
+                    continue
+                seen.add(turn_set.session_id)
+                related_turnsets.append(turn_set)
+        return related_turnsets
     if not project_path:
         raise ValueError("Local pipeline requires a project path or session id.")
     sessions = load_sessions_from_project(
@@ -848,31 +2023,60 @@ def run_local_pipeline(run_id: str, *, store: LocalStore | None = None) -> Outpu
     llm = create_llm_client()
     config = store.get_run_config(run_id)
     turnsets = load_turnsets_for_run(config, store=store)
-    store.update_progress(run_id, phase="distilling", processed=0, total=len(turnsets))
+    store.update_progress(
+        run_id,
+        phase="tracing",
+        processed=0,
+        total=len(turnsets),
+        clusters_processed=0,
+        clusters_total=0,
+    )
+    traces = _build_session_traces(turnsets, llm)
+    clusters = _cluster_traces(traces, anchor_session_id=config.get("session_id") or "")
+    store.update_progress(
+        run_id,
+        phase="clustering",
+        processed=len(turnsets),
+        total=len(turnsets),
+        clusters_processed=0,
+        clusters_total=len(clusters),
+    )
     pending_skills: list[PendingSkillData] = []
     pending_strategies: list[PendingStrategyData] = []
     artifact_payloads: list[dict[str, Any]] = []
+    pcr_payloads: list[dict[str, Any]] = []
     operator_payloads: list[dict[str, Any]] = []
-    for idx, turn_set in enumerate(turnsets, 1):
+    processed_sessions = 0
+    for idx, cluster in enumerate(clusters, 1):
         if store.is_stop_requested(run_id):
             raise RuntimeError("Pipeline stop requested.")
-        artifacts = distill_session(
+        artifacts = distill_cluster(
             run_id=run_id,
             project_id=config["project_id"],
-            turn_set=turn_set,
+            cluster=cluster,
             llm=llm,
             store=store,
         )
         pending_skills.append(artifacts.pending_skill)
         pending_strategies.append(artifacts.pending_strategy)
         artifact_payloads.extend(artifacts.artifact_payloads)
+        pcr_payloads.extend(artifacts.pcr_payloads)
         operator_payloads.extend(artifacts.operator_payloads)
-        store.update_progress(run_id, phase="distilling", processed=idx, total=len(turnsets))
+        processed_sessions += len(cluster.traces)
+        store.update_progress(
+            run_id,
+            phase="distilling",
+            processed=processed_sessions,
+            total=len(turnsets),
+            clusters_processed=idx,
+            clusters_total=len(clusters),
+        )
     store.save_artifacts(
         run_id=run_id,
         project_id=config["project_id"],
         session_id=config.get("session_id") or "",
         artifact_payloads=artifact_payloads,
+        pcr_payloads=pcr_payloads,
         operator_payloads=operator_payloads,
     )
     outputs = OutputsResult(
@@ -1024,7 +2228,7 @@ def _personalized_pagerank(
     total_personalized = sum(personalized.values())
     if total_personalized <= 0:
         uniform = 1.0 / len(allowed_ids)
-        personalized = {operator_id: uniform for operator_id in allowed_ids}
+        personalized = dict.fromkeys(allowed_ids, uniform)
     else:
         personalized = {
             operator_id: score / total_personalized
@@ -1105,7 +2309,7 @@ def _topological_waves(
     score_lookup: dict[str, dict[str, float]],
 ) -> list[list[str]]:
     dependents: defaultdict[str, list[str]] = defaultdict(list)
-    indegree: dict[str, int] = {operator_id: 0 for operator_id in selected_ids}
+    indegree: dict[str, int] = dict.fromkeys(selected_ids, 0)
     for operator_id in selected_ids:
         for target_id in _structural_dependency_ids(operator_map[operator_id], selected_ids):
             indegree[operator_id] += 1

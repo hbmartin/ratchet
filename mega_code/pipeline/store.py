@@ -23,12 +23,10 @@ from mega_code.client.api.protocol import (
     TriggerPipelineResult,
     WisdomCurateResult,
     WisdomFeedbackResult,
-    WisdomResultItem,
 )
 from mega_code.client.dirs import data_dir
 from mega_code.client.models import TurnSet
-from mega_code.client.turns import load_turns_jsonl
-from mega_code.client.turns import save_turns_jsonl
+from mega_code.client.turns import load_turns_jsonl, save_turns_jsonl
 
 
 def utcnow_iso() -> str:
@@ -312,7 +310,13 @@ class LocalStore:
         limit: int | None,
         concurrency: int,
     ) -> TriggerPipelineResult:
-        progress = {"current_phase": "queued", "sessions_processed": 0, "sessions_total": 0}
+        progress = {
+            "current_phase": "queued",
+            "sessions_processed": 0,
+            "sessions_total": 0,
+            "clusters_processed": 0,
+            "clusters_total": 0,
+        }
         with self._connect() as conn:
             conn.execute(
                 """
@@ -350,7 +354,19 @@ class LocalStore:
                     progress_json=?
                 WHERE run_id=?
                 """,
-                (pid, json.dumps({"current_phase": "starting", "sessions_processed": 0, "sessions_total": 0}), run_id),
+                (
+                    pid,
+                    json.dumps(
+                        {
+                            "current_phase": "starting",
+                            "sessions_processed": 0,
+                            "sessions_total": 0,
+                            "clusters_processed": 0,
+                            "clusters_total": 0,
+                        }
+                    ),
+                    run_id,
+                ),
             )
 
     def _is_pid_alive(self, pid: int | None) -> bool:
@@ -406,6 +422,8 @@ class LocalStore:
         processed: int,
         total: int,
         status: str = "running",
+        clusters_processed: int | None = None,
+        clusters_total: int | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -415,7 +433,19 @@ class LocalStore:
                     progress_json=?
                 WHERE run_id=?
                 """,
-                (status, json.dumps({"current_phase": phase, "sessions_processed": processed, "sessions_total": total}), run_id),
+                (
+                    status,
+                    json.dumps(
+                        {
+                            "current_phase": phase,
+                            "sessions_processed": processed,
+                            "sessions_total": total,
+                            "clusters_processed": clusters_processed if clusters_processed is not None else 0,
+                            "clusters_total": clusters_total if clusters_total is not None else 0,
+                        }
+                    ),
+                    run_id,
+                ),
             )
 
     def finish_run(
@@ -442,7 +472,15 @@ class LocalStore:
                     outputs.model_dump_json() if outputs else None,
                     error,
                     utcnow_iso(),
-                    json.dumps({"current_phase": status, "sessions_processed": 0, "sessions_total": 0}),
+                    json.dumps(
+                        {
+                            "current_phase": status,
+                            "sessions_processed": 0,
+                            "sessions_total": 0,
+                            "clusters_processed": 0,
+                            "clusters_total": 0,
+                        }
+                    ),
                     run_id,
                 ),
             )
@@ -559,7 +597,7 @@ class LocalStore:
                         artifact["artifact_id"],
                         run_id,
                         project_id,
-                        session_id,
+                        artifact.get("session_id", session_id),
                         artifact["artifact_type"],
                         artifact["name"],
                         artifact["version"],
