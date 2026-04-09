@@ -8,6 +8,7 @@ import os
 import signal
 import sqlite3
 import uuid
+from collections import defaultdict
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -125,6 +126,92 @@ class LocalStore:
                     lexical_text TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS operators (
+                    operator_id TEXT PRIMARY KEY,
+                    artifact_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    procedure TEXT NOT NULL,
+                    context TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    source_artifact TEXT NOT NULL,
+                    normalized_intent TEXT NOT NULL,
+                    slot_signature TEXT NOT NULL,
+                    feedback_score REAL NOT NULL DEFAULT 0.0,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS operator_procedure_index (
+                    operator_id TEXT PRIMARY KEY,
+                    facet_text TEXT NOT NULL,
+                    embedding_json TEXT NOT NULL,
+                    lexical_text TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS operator_context_index (
+                    operator_id TEXT PRIMARY KEY,
+                    facet_text TEXT NOT NULL,
+                    embedding_json TEXT NOT NULL,
+                    lexical_text TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS operator_outcome_index (
+                    operator_id TEXT PRIMARY KEY,
+                    facet_text TEXT NOT NULL,
+                    embedding_json TEXT NOT NULL,
+                    lexical_text TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS operator_edges (
+                    edge_id TEXT PRIMARY KEY,
+                    source_operator_id TEXT NOT NULL,
+                    target_operator_id TEXT NOT NULL,
+                    edge_type TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS operator_preconditions (
+                    precondition_id TEXT PRIMARY KEY,
+                    operator_id TEXT NOT NULL,
+                    precondition_type TEXT NOT NULL,
+                    key_name TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS operator_postconditions (
+                    postcondition_id TEXT PRIMARY KEY,
+                    operator_id TEXT NOT NULL,
+                    postcondition_type TEXT NOT NULL,
+                    key_name TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS operator_slots (
+                    slot_id TEXT PRIMARY KEY,
+                    operator_id TEXT NOT NULL,
+                    slot_name TEXT NOT NULL,
+                    slot_type TEXT NOT NULL,
+                    slot_value TEXT NOT NULL,
+                    required INTEGER NOT NULL DEFAULT 1,
+                    description TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS operator_env_fingerprints (
+                    operator_id TEXT PRIMARY KEY,
+                    fingerprint_json TEXT NOT NULL,
+                    lexical_text TEXT NOT NULL,
+                    fingerprint_hash TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS curation_sessions (
                     session_id TEXT PRIMARY KEY,
                     query TEXT NOT NULL,
@@ -150,6 +237,20 @@ class LocalStore:
                     ON artifacts(name, artifact_type);
                 CREATE INDEX IF NOT EXISTS idx_pcr_fragments_artifact
                     ON pcr_fragments(source_artifact);
+                CREATE INDEX IF NOT EXISTS idx_operators_project_created
+                    ON operators(project_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_operators_intent_signature
+                    ON operators(project_id, normalized_intent, slot_signature);
+                CREATE INDEX IF NOT EXISTS idx_operator_edges_source_type
+                    ON operator_edges(source_operator_id, edge_type);
+                CREATE INDEX IF NOT EXISTS idx_operator_edges_target_type
+                    ON operator_edges(target_operator_id, edge_type);
+                CREATE INDEX IF NOT EXISTS idx_operator_preconditions_operator
+                    ON operator_preconditions(operator_id);
+                CREATE INDEX IF NOT EXISTS idx_operator_postconditions_operator
+                    ON operator_postconditions(operator_id);
+                CREATE INDEX IF NOT EXISTS idx_operator_slots_operator
+                    ON operator_slots(operator_id);
                 """
             )
 
@@ -438,8 +539,11 @@ class LocalStore:
         project_id: str,
         session_id: str,
         artifact_payloads: list[dict[str, Any]],
-        pcr_payloads: list[dict[str, Any]],
+        pcr_payloads: list[dict[str, Any]] | None = None,
+        operator_payloads: list[dict[str, Any]] | None = None,
     ) -> None:
+        pcr_payloads = pcr_payloads or []
+        operator_payloads = operator_payloads or []
         with self._connect() as conn:
             for artifact in artifact_payloads:
                 conn.execute("DELETE FROM artifacts WHERE artifact_id=?", (artifact["artifact_id"],))
@@ -497,6 +601,200 @@ class LocalStore:
                         fragment["lexical_text"],
                     ),
                 )
+            existing_by_signature = conn.execute(
+                """
+                SELECT operator_id, normalized_intent, slot_signature, created_at
+                FROM operators
+                WHERE project_id = ?
+                """,
+                (project_id,),
+            ).fetchall()
+            existing_by_signature_map: defaultdict[tuple[str, str], list[sqlite3.Row]] = defaultdict(list)
+            for row in existing_by_signature:
+                existing_by_signature_map[(row["normalized_intent"], row["slot_signature"])].append(row)
+            new_fingerprint_hashes = {
+                payload["operator_id"]: payload["env_fingerprint"]["fingerprint_hash"]
+                for payload in operator_payloads
+            }
+            for operator in operator_payloads:
+                self._delete_operator_graph(conn, operator["operator_id"])
+                conn.execute(
+                    """
+                    INSERT INTO operators(
+                        operator_id, artifact_id, run_id, project_id, session_id, name,
+                        title, procedure, context, outcome, source_artifact,
+                        normalized_intent, slot_signature, feedback_score, created_at
+                    )
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        operator["operator_id"],
+                        operator["artifact_id"],
+                        run_id,
+                        project_id,
+                        session_id,
+                        operator["name"],
+                        operator["title"],
+                        operator["procedure"],
+                        operator["context"],
+                        operator["outcome"],
+                        operator["source_artifact"],
+                        operator["normalized_intent"],
+                        operator["slot_signature"],
+                        float(operator.get("feedback_score", 0.0)),
+                        operator["created_at"],
+                    ),
+                )
+                self._insert_operator_index(conn, "operator_procedure_index", operator["operator_id"], operator["indexes"]["procedure"])
+                self._insert_operator_index(conn, "operator_context_index", operator["operator_id"], operator["indexes"]["context"])
+                self._insert_operator_index(conn, "operator_outcome_index", operator["operator_id"], operator["indexes"]["outcome"])
+                for edge in operator.get("edges", []):
+                    self._insert_operator_edge(
+                        conn,
+                        source_operator_id=operator["operator_id"],
+                        target_operator_id=edge["target_operator_id"],
+                        edge_type=edge["edge_type"],
+                        metadata=edge.get("metadata", {}),
+                        created_at=operator["created_at"],
+                    )
+                for item in operator.get("preconditions", []):
+                    conn.execute(
+                        """
+                        INSERT INTO operator_preconditions(
+                            precondition_id, operator_id, precondition_type, key_name,
+                            value, description, created_at
+                        )
+                        VALUES(?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            item["precondition_id"],
+                            operator["operator_id"],
+                            item["precondition_type"],
+                            item["key_name"],
+                            item["value"],
+                            item["description"],
+                            operator["created_at"],
+                        ),
+                    )
+                for item in operator.get("postconditions", []):
+                    conn.execute(
+                        """
+                        INSERT INTO operator_postconditions(
+                            postcondition_id, operator_id, postcondition_type, key_name,
+                            value, description, created_at
+                        )
+                        VALUES(?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            item["postcondition_id"],
+                            operator["operator_id"],
+                            item["postcondition_type"],
+                            item["key_name"],
+                            item["value"],
+                            item["description"],
+                            operator["created_at"],
+                        ),
+                    )
+                for item in operator.get("slots", []):
+                    conn.execute(
+                        """
+                        INSERT INTO operator_slots(
+                            slot_id, operator_id, slot_name, slot_type,
+                            slot_value, required, description, created_at
+                        )
+                        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            item["slot_id"],
+                            operator["operator_id"],
+                            item["slot_name"],
+                            item["slot_type"],
+                            item["slot_value"],
+                            int(item.get("required", True)),
+                            item["description"],
+                            operator["created_at"],
+                        ),
+                    )
+                conn.execute(
+                    """
+                    INSERT INTO operator_env_fingerprints(
+                        operator_id, fingerprint_json, lexical_text, fingerprint_hash
+                    )
+                    VALUES(?, ?, ?, ?)
+                    """,
+                    (
+                        operator["operator_id"],
+                        json.dumps(operator["env_fingerprint"]["fingerprint"]),
+                        operator["env_fingerprint"]["lexical_text"],
+                        operator["env_fingerprint"]["fingerprint_hash"],
+                    ),
+                )
+                for previous in existing_by_signature_map[
+                    (operator["normalized_intent"], operator["slot_signature"])
+                ]:
+                    self._insert_operator_edge(
+                        conn,
+                        source_operator_id=operator["operator_id"],
+                        target_operator_id=previous["operator_id"],
+                        edge_type="supersedes",
+                        metadata={"reason": "newer operator with same normalized intent and slot signature"},
+                        created_at=operator["created_at"],
+                    )
+                for other in operator_payloads:
+                    if other["operator_id"] == operator["operator_id"]:
+                        continue
+                    if operator["normalized_intent"] != other["normalized_intent"]:
+                        continue
+                    if (
+                        operator["env_fingerprint"]["fingerprint"].get("package_manager")
+                        and other["env_fingerprint"]["fingerprint"].get("package_manager")
+                        and operator["env_fingerprint"]["fingerprint"].get("package_manager")
+                        != other["env_fingerprint"]["fingerprint"].get("package_manager")
+                    ):
+                        self._insert_operator_edge(
+                            conn,
+                            source_operator_id=operator["operator_id"],
+                            target_operator_id=other["operator_id"],
+                            edge_type="conflicts_with",
+                            metadata={
+                                "reason": "package-manager mismatch",
+                                "left": operator["env_fingerprint"]["fingerprint"].get("package_manager"),
+                                "right": other["env_fingerprint"]["fingerprint"].get("package_manager"),
+                            },
+                            created_at=operator["created_at"],
+                        )
+                for row in conn.execute(
+                    """
+                    SELECT operator_id, fingerprint_hash
+                    FROM operator_env_fingerprints
+                    WHERE operator_id != ?
+                    """,
+                    (operator["operator_id"],),
+                ).fetchall():
+                    if row["fingerprint_hash"] == new_fingerprint_hashes[operator["operator_id"]]:
+                        continue
+                    other_operator = conn.execute(
+                        """
+                        SELECT normalized_intent
+                        FROM operators
+                        WHERE operator_id = ?
+                        """,
+                        (row["operator_id"],),
+                    ).fetchone()
+                    if not other_operator or other_operator["normalized_intent"] != operator["normalized_intent"]:
+                        continue
+                    if operator["slot_signature"] != conn.execute(
+                        "SELECT slot_signature FROM operators WHERE operator_id = ?",
+                        (row["operator_id"],),
+                    ).fetchone()["slot_signature"]:
+                        self._insert_operator_edge(
+                            conn,
+                            source_operator_id=operator["operator_id"],
+                            target_operator_id=row["operator_id"],
+                            edge_type="conflicts_with",
+                            metadata={"reason": "different slot signature for same intent"},
+                            created_at=operator["created_at"],
+                        )
 
     def fetch_fragments(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -509,6 +807,55 @@ class LocalStore:
                 """
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def fetch_operators(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            operator_rows = conn.execute(
+                """
+                SELECT o.*, a.source_path, a.artifact_type, a.content AS artifact_content
+                FROM operators o
+                JOIN artifacts a ON a.artifact_id = o.artifact_id
+                ORDER BY o.created_at DESC
+                """
+            ).fetchall()
+            if not operator_rows:
+                return []
+            operator_ids = [row["operator_id"] for row in operator_rows]
+            indexes = {
+                "procedure": self._fetch_index_rows(conn, "operator_procedure_index", operator_ids),
+                "context": self._fetch_index_rows(conn, "operator_context_index", operator_ids),
+                "outcome": self._fetch_index_rows(conn, "operator_outcome_index", operator_ids),
+            }
+            edges = self._fetch_related_rows(conn, "operator_edges", "source_operator_id", operator_ids)
+            incoming = self._fetch_related_rows(conn, "operator_edges", "target_operator_id", operator_ids)
+            preconditions = self._fetch_related_rows(
+                conn, "operator_preconditions", "operator_id", operator_ids
+            )
+            postconditions = self._fetch_related_rows(
+                conn, "operator_postconditions", "operator_id", operator_ids
+            )
+            slots = self._fetch_related_rows(conn, "operator_slots", "operator_id", operator_ids)
+            fingerprints = self._fetch_index_rows(conn, "operator_env_fingerprints", operator_ids)
+        operators: list[dict[str, Any]] = []
+        for row in operator_rows:
+            operator_id = row["operator_id"]
+            operators.append(
+                {
+                    **dict(row),
+                    "indexes": {
+                        "procedure": indexes["procedure"].get(operator_id, {}),
+                        "context": indexes["context"].get(operator_id, {}),
+                        "outcome": indexes["outcome"].get(operator_id, {}),
+                    },
+                    "edges": edges.get(operator_id, []),
+                    "incoming_edges": incoming.get(operator_id, []),
+                    "preconditions": preconditions.get(operator_id, []),
+                    "postconditions": postconditions.get(operator_id, []),
+                    "slots": slots.get(operator_id, []),
+                    "env_fingerprint": fingerprints.get(operator_id, {}),
+                }
+            )
+        return operators
 
     def save_curation(self, result: WisdomCurateResult, status: str = "pending") -> None:
         with self._connect() as conn:
@@ -552,9 +899,9 @@ class LocalStore:
             for wisdom in wisdoms:
                 conn.execute(
                     """
-                    UPDATE pcr_fragments
+                    UPDATE operators
                     SET feedback_score = feedback_score + ?
-                    WHERE fragment_id = ?
+                    WHERE operator_id = ?
                     """,
                     (delta, wisdom.get("wisdom_id")),
                 )
@@ -580,6 +927,97 @@ class LocalStore:
             target = target_dir / f"{name}.md"
         target.write_text(content, encoding="utf-8")
         return str(target_dir if artifact_type == "skill" else target)
+
+    def _delete_operator_graph(self, conn: sqlite3.Connection, operator_id: str) -> None:
+        for table, column in (
+            ("operator_procedure_index", "operator_id"),
+            ("operator_context_index", "operator_id"),
+            ("operator_outcome_index", "operator_id"),
+            ("operator_preconditions", "operator_id"),
+            ("operator_postconditions", "operator_id"),
+            ("operator_slots", "operator_id"),
+            ("operator_env_fingerprints", "operator_id"),
+            ("operator_edges", "source_operator_id"),
+            ("operator_edges", "target_operator_id"),
+            ("operators", "operator_id"),
+        ):
+            conn.execute(f"DELETE FROM {table} WHERE {column}=?", (operator_id,))
+
+    def _insert_operator_index(
+        self,
+        conn: sqlite3.Connection,
+        table_name: str,
+        operator_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        conn.execute(
+            f"""
+            INSERT INTO {table_name}(operator_id, facet_text, embedding_json, lexical_text)
+            VALUES(?, ?, ?, ?)
+            """,
+            (
+                operator_id,
+                payload["facet_text"],
+                json.dumps(payload["embedding"]),
+                payload["lexical_text"],
+            ),
+        )
+
+    def _insert_operator_edge(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        source_operator_id: str,
+        target_operator_id: str,
+        edge_type: str,
+        metadata: dict[str, Any],
+        created_at: str,
+    ) -> None:
+        edge_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"{source_operator_id}:{edge_type}:{target_operator_id}",
+            )
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO operator_edges(
+                edge_id, source_operator_id, target_operator_id, edge_type, metadata_json, created_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            (edge_id, source_operator_id, target_operator_id, edge_type, json.dumps(metadata), created_at),
+        )
+
+    def _fetch_index_rows(
+        self,
+        conn: sqlite3.Connection,
+        table_name: str,
+        operator_ids: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        placeholders = ",".join("?" for _ in operator_ids)
+        rows = conn.execute(
+            f"SELECT * FROM {table_name} WHERE operator_id IN ({placeholders})",
+            operator_ids,
+        ).fetchall()
+        return {row["operator_id"]: dict(row) for row in rows}
+
+    def _fetch_related_rows(
+        self,
+        conn: sqlite3.Connection,
+        table_name: str,
+        id_column: str,
+        operator_ids: list[str],
+    ) -> dict[str, list[dict[str, Any]]]:
+        placeholders = ",".join("?" for _ in operator_ids)
+        rows = conn.execute(
+            f"SELECT * FROM {table_name} WHERE {id_column} IN ({placeholders})",
+            operator_ids,
+        ).fetchall()
+        grouped: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            grouped[row[id_column]].append(dict(row))
+        return grouped
 
 
 def feedback_delta(feedback_text: str) -> float:

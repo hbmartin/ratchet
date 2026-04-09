@@ -107,11 +107,26 @@ def test_local_pipeline_ingest_lifecycle_and_feedback(tmp_path, monkeypatch):
     skill_name = outputs.pending_skills[0].skill_name
     knowledge_skill = Path(tmp_path / "data" / "knowledge" / "skills" / skill_name / "SKILL.md")
     assert knowledge_skill.is_file()
+    store = LocalStore()
+    operators = store.fetch_operators()
+    assert operators
+    assert all(item["indexes"]["procedure"] for item in operators)
+    assert all(item["indexes"]["context"] for item in operators)
+    assert all(item["indexes"]["outcome"] for item in operators)
+    assert any(item["preconditions"] for item in operators)
+    assert any(item["postconditions"] for item in operators)
+    assert any(item["slots"] for item in operators)
+    assert all(item["env_fingerprint"] for item in operators)
 
     curation = fresh_client.wisdom_curate(query="auth token refresh workflow", top_k=5)
     assert curation.skills
+    assert curation.operator_plan
+    assert curation.readiness_summary is not None
     assert any(skill.name == skill_name for skill in curation.skills)
     first_wisdom = curation.wisdoms[0]
+    first_operator = curation.operator_plan[0]
+    assert first_operator.operator_id == first_wisdom.wisdom_id
+    assert first_operator.source_artifact == skill_name
 
     feedback = fresh_client.wisdom_feedback(
         session_id=curation.session_id,

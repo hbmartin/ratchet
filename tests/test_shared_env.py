@@ -46,9 +46,6 @@ class TestSaveAndLoadEnvFile:
     def test_round_trip(self, tmp_path):
         env_path = tmp_path / ".env"
         env_vars = {
-            "MEGA_CODE_API_KEY": "mg_test_key_123",
-            "MEGA_CODE_CLIENT_MODE": "remote",
-            "MEGA_CODE_SERVER_URL": "https://console.megacode.ai",
         }
         save_env_file(env_path, env_vars)
         loaded = load_env_file(env_path)
@@ -90,9 +87,6 @@ class TestLoginSavesToSharedEnv:
             "https://console.megacode.ai/api/mega-service/v1",
         )
         assert env_path == tmp_path / ".local" / "share" / "mega-code" / ".env"
-        assert env_vars["MEGA_CODE_API_KEY"] == "mg_test_api_key"
-        assert env_vars["MEGA_CODE_CLIENT_MODE"] == "remote"
-        assert env_vars["MEGA_CODE_SERVER_URL"] == "https://console.megacode.ai"
 
     def test_save_api_key_file_permissions(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)

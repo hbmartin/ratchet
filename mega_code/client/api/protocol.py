@@ -15,6 +15,7 @@ __all__ = [
     "ActivePipelinesResult",
     "EnhanceSkillResult",
     "MegaCodeBaseClient",
+    "OperatorPlanItem",
     "OutputsResult",
     "PendingLessonData",
     "PendingSkillData",
@@ -247,6 +248,28 @@ class SkillRefItem(BaseModel):
     url: str = Field(default="", description="Pre-signed URL to download the skill ZIP")
 
 
+class OperatorPlanItem(BaseModel):
+    """Execution-assist plan item derived from the operator graph."""
+
+    operator_id: str = Field(description="Unique identifier of the selected operator")
+    title: str = Field(description="Human-readable operator title")
+    source_artifact: str = Field(description="Source skill or artifact name")
+    score: float = Field(description="Merged graph-aware relevance score")
+    status: str = Field(description="Readiness status for execution assistance")
+    depends_on: list[str] = Field(default_factory=list, description="Operator IDs that must run first")
+    requires_context: list[str] = Field(
+        default_factory=list, description="Operator IDs that establish required context"
+    )
+    conflicts_with: list[str] = Field(
+        default_factory=list, description="Operator IDs that conflict with this operator"
+    )
+    missing_preconditions: list[str] = Field(
+        default_factory=list, description="Preconditions not currently satisfied"
+    )
+    missing_slots: list[str] = Field(default_factory=list, description="Required slots lacking values")
+    env_match_score: float = Field(description="Environment fingerprint compatibility score")
+
+
 class WisdomCurateResult(BaseModel):
     """Result from wisdom curate endpoint."""
 
@@ -256,6 +279,12 @@ class WisdomCurateResult(BaseModel):
     skills: list[SkillRefItem] = Field(default_factory=list, description="Curated skill references")
     wisdoms: list[WisdomResultItem] = Field(
         default_factory=list, description="Retrieved wisdom records with scores"
+    )
+    operator_plan: list[OperatorPlanItem] = Field(
+        default_factory=list, description="Ordered operator plan for execution assistance"
+    )
+    readiness_summary: dict[str, int] | None = Field(
+        default=None, description="Counts of operators grouped by readiness status"
     )
     token_count: int = Field(default=0, description="Total LLM tokens consumed")
     cost_usd: float = Field(default=0.0, description="Total LLM cost in USD")
