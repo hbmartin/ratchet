@@ -156,6 +156,224 @@ def _snippet(text: str, limit: int = 180) -> str:
     return flat[:limit].rstrip() + ("..." if len(flat) > limit else "")
 
 
+def _hash_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _is_verification_step(step: dict[str, Any]) -> bool:
+    if step.get("error"):
+        return False
+    command = (step.get("command") or "").lower()
+    label = step["label"].lower()
+    return _success_target(step) == "verification_loop" or any(
+        token in command or token in label
+        for token in ("pytest", "test", "verify", "verification", "lint", "check", "build")
+    )
+
+
+def _verification_artifacts_from_steps(
+    steps: list[dict[str, Any]],
+    *,
+    default_session_id: str = "",
+) -> list[dict[str, Any]]:
+    buckets: dict[tuple[str, str], dict[str, Any]] = {}
+    for step in steps:
+        if not _is_verification_step(step):
+            continue
+        label = step["label"].strip()
+        command = (step.get("command") or "").strip()
+        key = (label, command)
+        bucket = buckets.setdefault(
+            key,
+            {
+                "kind": step.get("kind", "analysis"),
+                "label": label,
+                "command": command,
+                "observed": step["evidence"],
+                "session_ids": [],
+            },
+        )
+        session_id = str(step.get("session_id") or default_session_id).strip()
+        if session_id and session_id not in bucket["session_ids"]:
+            bucket["session_ids"].append(session_id)
+    return list(buckets.values())
+
+
+def _rollback_lineage_from_corrections(
+    correction_windows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    lineage: list[dict[str, Any]] = []
+    for window in correction_windows[:8]:
+        error_step = window.get("error_step") or {}
+        recovery_steps = window.get("recovery_steps", [])
+        lineage.append(
+            {
+                "session_id": str(window.get("session_id", "")).strip(),
+                "failed_step": str(error_step.get("label", "")).strip(),
+                "evidence": str(error_step.get("evidence", "")).strip(),
+                "recovery_steps": [
+                    str(step.get("label", "")).strip()
+                    for step in recovery_steps[:3]
+                    if str(step.get("label", "")).strip()
+                ],
+            }
+        )
+    return lineage
+
+
+def _revalidation_triggers(
+    *,
+    env_fingerprint: dict[str, Any],
+    referenced_env_vars: list[str],
+    referenced_paths: list[str],
+    correction_count: int,
+) -> list[str]:
+    triggers = ["source_artifact_digest_changed"]
+    if env_fingerprint.get("package_manager"):
+        triggers.append("package_manager_changed")
+    if env_fingerprint.get("frameworks"):
+        triggers.append("framework_stack_changed")
+    if env_fingerprint.get("language"):
+        triggers.append("language_runtime_changed")
+    if env_fingerprint.get("branch"):
+        triggers.append("git_branch_changed")
+    if referenced_paths:
+        triggers.append("referenced_paths_changed")
+    triggers.extend(f"env_var_changed:{name}" for name in referenced_env_vars)
+    if correction_count:
+        triggers.append("rollback_lineage_extended")
+    return _distinct_strings(triggers)
+
+
+def _validation_level(*, support_count: int, verification_artifacts: list[dict[str, Any]]) -> str:
+    if support_count >= 2 and verification_artifacts:
+        return "reproduced"
+    if verification_artifacts:
+        return "verified"
+    return "observed"
+
+
+def _trust_tier(*, validation_level: str, correction_count: int) -> str:
+    if validation_level == "reproduced" and correction_count > 0:
+        return "hardened"
+    if validation_level in {"verified", "reproduced"}:
+        return "trusted"
+    return "provisional"
+
+
+def _safety_gate(
+    *,
+    validation_level: str,
+    source_sessions: list[str],
+    source_paths: list[str],
+    evidence_digest: str,
+    verification_artifacts: list[dict[str, Any]],
+) -> tuple[str, str]:
+    if not source_sessions or not evidence_digest:
+        return ("blocked", "Missing provenance chain for this knowledge record.")
+    if validation_level in {"verified", "reproduced"} and verification_artifacts and source_paths:
+        return (
+            "approved",
+            "Verification artifacts, provenance, and digests are present.",
+        )
+    if validation_level == "observed":
+        return (
+            "review_required",
+            "Observed knowledge needs a successful verification artifact before reuse.",
+        )
+    return (
+        "review_required",
+        "Revalidate this knowledge before allowing it to influence future sessions.",
+    )
+
+
+def _build_governance_payload(
+    *,
+    content: str,
+    session_ids: list[str],
+    source_paths: list[str],
+    referenced_env_vars: list[str],
+    verification_artifacts: list[dict[str, Any]],
+    rollback_lineage: list[dict[str, Any]],
+    support_count: int,
+    correction_count: int,
+    error_rate: float,
+    env_fingerprint: dict[str, Any],
+    last_validated_at: str,
+) -> dict[str, Any]:
+    source_sessions = _distinct_strings(session_ids)
+    normalized_paths = _distinct_strings(source_paths)
+    evidence_digest = _hash_text(
+        json.dumps(
+            {
+                "sessions": source_sessions,
+                "tests": verification_artifacts,
+                "rollbacks": rollback_lineage,
+            },
+            sort_keys=True,
+        )
+    )
+    validation_level = _validation_level(
+        support_count=support_count,
+        verification_artifacts=verification_artifacts,
+    )
+    trust_tier = _trust_tier(
+        validation_level=validation_level,
+        correction_count=correction_count,
+    )
+    safety_gate_status, safety_gate_reason = _safety_gate(
+        validation_level=validation_level,
+        source_sessions=source_sessions,
+        source_paths=normalized_paths,
+        evidence_digest=evidence_digest,
+        verification_artifacts=verification_artifacts,
+    )
+    provenance = {
+        "source_sessions": source_sessions,
+        "source_paths": normalized_paths,
+        "evidence_digest": evidence_digest,
+        "test_artifacts": verification_artifacts,
+        "test_artifact_digest": _hash_text(json.dumps(verification_artifacts, sort_keys=True))
+        if verification_artifacts
+        else "",
+        "revalidation_triggers": _revalidation_triggers(
+            env_fingerprint=env_fingerprint,
+            referenced_env_vars=referenced_env_vars,
+            referenced_paths=normalized_paths,
+            correction_count=correction_count,
+        ),
+        "rollback_lineage": rollback_lineage,
+        "support_count": support_count,
+        "correction_count": correction_count,
+        "error_rate": round(error_rate, 6),
+    }
+    return {
+        "content_digest": _hash_text(content),
+        "validation_level": validation_level,
+        "trust_tier": trust_tier,
+        "safety_gate_status": safety_gate_status,
+        "safety_gate_reason": safety_gate_reason,
+        "last_validated_at": last_validated_at,
+        "provenance": provenance,
+    }
+
+
+def _clone_governance_payload(
+    governance: dict[str, Any],
+    *,
+    content: str,
+    extra_provenance: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    provenance = dict(governance.get("provenance", {}))
+    if extra_provenance:
+        provenance.update(extra_provenance)
+    return {
+        **governance,
+        "content_digest": _hash_text(content),
+        "provenance": provenance,
+    }
+
+
 def _top_keywords(turns: list[Turn]) -> list[str]:
     counter: Counter[str] = Counter()
     for turn in turns:
@@ -1200,6 +1418,7 @@ def _build_pcr_payloads(
     artifact_id: str,
     skill_name: str,
     memory_fragments: list[_MemoryFragment],
+    governance: dict[str, Any],
 ) -> list[dict[str, Any]]:
     if not memory_fragments:
         return []
@@ -1219,6 +1438,15 @@ def _build_pcr_payloads(
     embeddings = llm.embed_documents(lexical_texts)
     payloads: list[dict[str, Any]] = []
     for idx, fragment in enumerate(memory_fragments, 1):
+        fragment_governance = _clone_governance_payload(
+            governance,
+            content=lexical_texts[idx - 1],
+            extra_provenance={
+                "source_artifact_digest": governance["content_digest"],
+                "fragment_kind": fragment.kind,
+                "fragment_sessions": fragment.evidence_session_ids,
+            },
+        )
         payloads.append(
             {
                 "fragment_id": _stable_id(artifact_id, "fragment", idx, fragment.name),
@@ -1235,6 +1463,7 @@ def _build_pcr_payloads(
                 "created_at": utcnow_iso(),
                 "embedding": embeddings[idx - 1],
                 "lexical_text": lexical_texts[idx - 1],
+                **fragment_governance,
             }
         )
     return payloads
@@ -1269,8 +1498,9 @@ def distill_cluster(
     error_count = sum(len(trace.error_windows) for trace in cluster.traces)
     total_steps = sum(len(trace.steps) for trace in cluster.traces) or 1
     correction_count = sum(len(trace.correction_windows) for trace in cluster.traces)
+    created_at = utcnow_iso()
     metadata = {
-        "generated_at": utcnow_iso(),
+        "generated_at": created_at,
         "workflow": {
             "domains": keywords[:4],
             "cluster_id": cluster.cluster_id,
@@ -1309,6 +1539,51 @@ def distill_cluster(
         "trigger_keywords": keywords[:6],
         "project_path": cluster.traces[0].turn_set.metadata.project_path or "",
     }
+    verification_artifacts = _verification_artifacts_from_steps(
+        [
+            {**step, "session_id": trace.turn_set.session_id}
+            for trace in cluster.traces
+            for step in trace.success_steps
+        ]
+    )
+    governance = _build_governance_payload(
+        content=skill_md,
+        session_ids=[trace.turn_set.session_id for trace in cluster.traces],
+        source_paths=_distinct_strings(
+            [path for trace in cluster.traces for path in trace.referenced_paths],
+            limit=16,
+        ),
+        referenced_env_vars=_distinct_strings(
+            [env_var for trace in cluster.traces for env_var in trace.referenced_env_vars],
+            limit=16,
+        ),
+        verification_artifacts=verification_artifacts,
+        rollback_lineage=_rollback_lineage_from_corrections(
+            [window for trace in cluster.traces for window in trace.correction_windows]
+        ),
+        support_count=len(cluster.traces),
+        correction_count=correction_count,
+        error_rate=error_count / total_steps,
+        env_fingerprint=env_fingerprint,
+        last_validated_at=created_at,
+    )
+    strategy_governance = _clone_governance_payload(governance, content=strategy_md)
+    metadata.update(
+        {
+            "validation_passed": governance["safety_gate_status"] == "approved",
+            "validation_level": governance["validation_level"],
+            "trust_tier": governance["trust_tier"],
+            "safety_gate_status": governance["safety_gate_status"],
+            "safety_gate_reason": governance["safety_gate_reason"],
+            "content_digest": governance["content_digest"],
+            "provenance": governance["provenance"],
+        }
+    )
+    strategy_metadata = {
+        **metadata,
+        "content_digest": strategy_governance["content_digest"],
+        "provenance": strategy_governance["provenance"],
+    }
     artifact_embedding = llm.embed_documents([skill_md + "\n" + strategy_md])[0]
     skill_artifact_id = _artifact_id(run_id, cluster.cluster_id, "skill", cluster.skill_name)
     skill_source_path = store.write_source_tree(
@@ -1331,6 +1606,10 @@ def distill_cluster(
         author=get_author(),
         version=DEFAULT_VERSION,
         tags=keywords[:4],
+        validation_level=governance["validation_level"],
+        trust_tier=governance["trust_tier"],
+        safety_gate_status=governance["safety_gate_status"],
+        safety_gate_reason=governance["safety_gate_reason"],
     )
     pending_strategy = PendingStrategyData(
         strategy_name=cluster.strategy_name,
@@ -1350,8 +1629,9 @@ def distill_cluster(
             "metadata": metadata,
             "source_path": skill_source_path,
             "session_id": cluster.cluster_id,
-            "created_at": utcnow_iso(),
+            "created_at": created_at,
             "embedding": artifact_embedding,
+            **governance,
         },
         {
             "artifact_id": strategy_artifact_id,
@@ -1359,11 +1639,12 @@ def distill_cluster(
             "name": cluster.strategy_name,
             "version": DEFAULT_VERSION,
             "content": strategy_md,
-            "metadata": metadata,
+            "metadata": strategy_metadata,
             "source_path": strategy_source_path,
             "session_id": cluster.cluster_id,
-            "created_at": utcnow_iso(),
+            "created_at": created_at,
             "embedding": artifact_embedding,
+            **strategy_governance,
         },
     ]
     pcr_payloads = _build_pcr_payloads(
@@ -1372,6 +1653,7 @@ def distill_cluster(
         artifact_id=skill_artifact_id,
         skill_name=cluster.skill_name,
         memory_fragments=consolidated.memory_fragments,
+        governance=governance,
     )
     operator_steps = _operator_steps_from_consolidated(consolidated, grouped_proposals)
     context_text = _build_context_text(cluster.traces[0].turn_set, env_fingerprint)
@@ -1386,6 +1668,7 @@ def distill_cluster(
         llm=llm,
         context_text=context_text,
         env_fingerprint=env_fingerprint,
+        governance=governance,
     )
     return SessionArtifacts(
         pending_skill=pending_skill,
@@ -1727,6 +2010,7 @@ def _operator_payloads(
     llm: BaseLocalLLM,
     context_text: str,
     env_fingerprint: dict[str, Any],
+    governance: dict[str, Any],
 ) -> list[dict[str, Any]]:
     procedure_texts = [_step_procedure_text(step) for step in steps]
     context_texts = [_step_context_text(step, context_text, env_fingerprint) for step in steps]
@@ -1761,6 +2045,25 @@ def _operator_payloads(
                     "metadata": {"reason": "analysis step established the execution context"},
                 }
             )
+        operator_governance = _clone_governance_payload(
+            governance,
+            content="\n".join(
+                [
+                    procedure_texts[idx - 1],
+                    context_texts[idx - 1],
+                    outcome_texts[idx - 1],
+                ]
+            ),
+            extra_provenance={
+                "source_artifact_digest": governance["content_digest"],
+                "operator_index": idx,
+                "step_kind": step["kind"],
+                "step_paths": _extract_paths(
+                    " ".join(filter(None, [step.get("command"), step.get("label"), step.get("evidence")]))
+                ),
+                "session_id": session_id,
+            },
+        )
         payload = {
             "operator_id": operator_id,
             "artifact_id": artifact_id,
@@ -1819,6 +2122,7 @@ def _operator_payloads(
                 "lexical_text": _fingerprint_lexical_text(env_fingerprint),
                 "fingerprint_hash": fingerprint_hash,
             },
+            **operator_governance,
         }
         payloads.append(payload)
         previous_operator_id = operator_id
@@ -1863,9 +2167,11 @@ def distill_session(
     env_fingerprint["env_var_presence"] = {
         env_var: bool(os.environ.get(env_var)) for env_var in referenced_env_vars
     }
+    session_trace = _build_session_trace(turn_set)
     skill_md = _build_skill_markdown(turn_set, skill_name, steps, keywords)
     strategy_name = f"{skill_name}-strategy"
     strategy_md = _build_strategy_markdown(skill_name, turn_set, steps)
+    created_at = utcnow_iso()
     evidence_items = [
         {
             "turn_id": turn.turn_id,
@@ -1878,7 +2184,7 @@ def distill_session(
         for turn in turn_set.turns[:12]
     ]
     metadata = {
-        "generated_at": utcnow_iso(),
+        "generated_at": created_at,
         "workflow": {
             "domains": keywords[:4],
             "session_id": turn_set.session_id,
@@ -1889,6 +2195,39 @@ def distill_session(
         "mode": "local",
         "trigger_keywords": keywords[:6],
         "project_path": turn_set.metadata.project_path or "",
+    }
+    governance = _build_governance_payload(
+        content=skill_md,
+        session_ids=[turn_set.session_id],
+        source_paths=session_trace.referenced_paths,
+        referenced_env_vars=session_trace.referenced_env_vars,
+        verification_artifacts=_verification_artifacts_from_steps(
+            [{**step, "session_id": turn_set.session_id} for step in steps],
+            default_session_id=turn_set.session_id,
+        ),
+        rollback_lineage=_rollback_lineage_from_corrections(session_trace.correction_windows),
+        support_count=1,
+        correction_count=len(session_trace.correction_windows),
+        error_rate=len(session_trace.error_windows) / max(len(session_trace.steps), 1),
+        env_fingerprint=env_fingerprint,
+        last_validated_at=created_at,
+    )
+    strategy_governance = _clone_governance_payload(governance, content=strategy_md)
+    metadata.update(
+        {
+            "validation_passed": governance["safety_gate_status"] == "approved",
+            "validation_level": governance["validation_level"],
+            "trust_tier": governance["trust_tier"],
+            "safety_gate_status": governance["safety_gate_status"],
+            "safety_gate_reason": governance["safety_gate_reason"],
+            "content_digest": governance["content_digest"],
+            "provenance": governance["provenance"],
+        }
+    )
+    strategy_metadata = {
+        **metadata,
+        "content_digest": strategy_governance["content_digest"],
+        "provenance": strategy_governance["provenance"],
     }
     context_text = _build_context_text(turn_set, env_fingerprint)
     artifact_embedding = llm.embed_documents([skill_md + "\n" + strategy_md])[0]
@@ -1909,6 +2248,10 @@ def distill_session(
         author=get_author(),
         version=DEFAULT_VERSION,
         tags=keywords[:4],
+        validation_level=governance["validation_level"],
+        trust_tier=governance["trust_tier"],
+        safety_gate_status=governance["safety_gate_status"],
+        safety_gate_reason=governance["safety_gate_reason"],
     )
     pending_strategy = PendingStrategyData(
         strategy_name=strategy_name,
@@ -1927,8 +2270,9 @@ def distill_session(
             "content": skill_md,
             "metadata": metadata,
             "source_path": skill_source_path,
-            "created_at": utcnow_iso(),
+            "created_at": created_at,
             "embedding": artifact_embedding,
+            **governance,
         },
         {
             "artifact_id": strategy_artifact_id,
@@ -1936,10 +2280,11 @@ def distill_session(
             "name": strategy_name,
             "version": DEFAULT_VERSION,
             "content": strategy_md,
-            "metadata": metadata,
+            "metadata": strategy_metadata,
             "source_path": strategy_source_path,
-            "created_at": utcnow_iso(),
+            "created_at": created_at,
             "embedding": artifact_embedding,
+            **strategy_governance,
         },
     ]
     operator_payloads = _operator_payloads(
@@ -1953,6 +2298,7 @@ def distill_session(
         llm=llm,
         context_text=context_text,
         env_fingerprint=env_fingerprint,
+        governance=governance,
     )
     return SessionArtifacts(
         pending_skill=pending_skill,
@@ -2539,6 +2885,65 @@ def _evaluate_slots(operator: dict[str, Any]) -> list[str]:
     return missing
 
 
+def _source_artifact_file(operator: dict[str, Any]) -> Path | None:
+    source_path = str(operator.get("source_path", "")).strip()
+    if not source_path:
+        return None
+    path = Path(source_path)
+    if path.is_file():
+        return path
+    skill_md = path / "SKILL.md"
+    if skill_md.exists():
+        return skill_md
+    return None
+
+
+def _evaluate_operator_governance(
+    operator: dict[str, Any],
+    *,
+    current_env: dict[str, Any],
+) -> tuple[str, str]:
+    status = str(operator.get("safety_gate_status") or "approved")
+    reasons: list[str] = []
+    if operator.get("safety_gate_reason"):
+        reasons.append(str(operator["safety_gate_reason"]))
+    if operator.get("validation_level") == "observed":
+        status = "review_required"
+        reasons.append("Observed knowledge has not passed verification yet.")
+    provenance = operator.get("provenance") if isinstance(operator.get("provenance"), dict) else {}
+    source_artifact_digest = str(provenance.get("source_artifact_digest", "")).strip()
+    source_file = _source_artifact_file(operator)
+    if source_artifact_digest and source_file is not None:
+        file_text = _safe_read_text(source_file)
+        if file_text:
+            current_digest = _hash_text(file_text)
+            if current_digest != source_artifact_digest:
+                status = "review_required"
+                reasons.append("Source artifact changed on disk and requires revalidation.")
+    candidate_fingerprint = json.loads(operator["env_fingerprint"].get("fingerprint_json", "{}"))
+    if operator.get("trust_tier") != "hardened":
+        current_pm = str(current_env.get("package_manager") or "").strip()
+        candidate_pm = str(candidate_fingerprint.get("package_manager") or "").strip()
+        if current_pm and candidate_pm and current_pm != candidate_pm:
+            status = "review_required"
+            reasons.append("Package manager drift requires revalidation.")
+        current_language = str(current_env.get("language") or "").strip()
+        candidate_language = str(candidate_fingerprint.get("language") or "").strip()
+        if current_language and candidate_language and current_language != candidate_language:
+            status = "review_required"
+            reasons.append("Language/runtime drift requires revalidation.")
+    reliability = operator.get("reliability") or {}
+    if (
+        int(reliability.get("hurt_count", 0)) >= 2
+        or int(reliability.get("abstain_count", 0)) >= 2
+    ):
+        status = "blocked"
+        reasons.append("Historical feedback marks this operator as unsafe to reuse.")
+    if status == "approved":
+        return (status, str(operator.get("safety_gate_reason", "")))
+    return (status, _first_sentence(" ".join(_distinct_strings(reasons)), "Governance review required."))
+
+
 def curate_local_wisdom(
     *,
     query: str,
@@ -2574,16 +2979,62 @@ def curate_local_wisdom(
         store.save_curation(result)
         return result
     current_env = _current_runtime_fingerprint(query)
-    operator_map = {item["operator_id"]: item for item in operators}
     superseded_ids = {
         edge["target_operator_id"]
         for item in operators
         for edge in item.get("edges", [])
         if edge.get("edge_type") == "supersedes"
     }
-    eligible_operators = [
-        item for item in operators if item["operator_id"] not in superseded_ids
-    ]
+    governance_counts: Counter[str] = Counter()
+    eligible_operators: list[dict[str, Any]] = []
+    governance_blockers: list[str] = []
+    for item in operators:
+        if item["operator_id"] in superseded_ids:
+            continue
+        gate_status, gate_reason = _evaluate_operator_governance(item, current_env=current_env)
+        governance_counts[gate_status] += 1
+        gated_item = {
+            **item,
+            "dynamic_safety_gate_status": gate_status,
+            "dynamic_safety_gate_reason": gate_reason,
+        }
+        if gate_status == "approved":
+            eligible_operators.append(gated_item)
+            continue
+        if gate_reason:
+            governance_blockers.append(gate_reason)
+    if not eligible_operators:
+        governance_summary = (
+            f"approved={governance_counts.get('approved', 0)}, "
+            f"review_required={governance_counts.get('review_required', 0)}, "
+            f"blocked={governance_counts.get('blocked', 0)}"
+        )
+        curation = (
+            "Wisdom Curation\n\n"
+            f"Problem: {query}\n\n"
+            "Workflow: Local Operator Graph\n"
+            "Overview: Operators exist, but none passed the validation/trust safety gate for reuse.\n"
+            f"Governance: {governance_summary}.\n"
+        )
+        if governance_blockers:
+            curation += f"Reason: {governance_blockers[0]}\n"
+        result = WisdomCurateResult(
+            session_id=session_id or str(uuid.uuid4()),
+            query=query,
+            curation=curation,
+            skills=[],
+            wisdoms=[],
+            operator_plan=[],
+            readiness_summary={"ready": 0, "blocked": 0},
+            confidence=0.0,
+            should_abstain=True,
+            abstain_reason="No operators passed the validation/trust safety gate.",
+            token_count=0,
+            cost_usd=0.0,
+        )
+        store.save_curation(result)
+        return result
+    operator_map = {item["operator_id"]: item for item in eligible_operators}
     eligible_ids = {item["operator_id"] for item in eligible_operators}
     query_tokens = _tokenize(query)
     procedure_scores = _facet_candidate_scores(
@@ -2809,6 +3260,15 @@ def curate_local_wisdom(
                 should_abstain=bool(item.get("should_abstain", False)),
                 abstain_reason=str(item.get("abstain_reason", "")),
                 reliability=item.get("reliability"),
+                validation_level=str(item.get("validation_level", "observed")),
+                trust_tier=str(item.get("trust_tier", "provisional")),
+                safety_gate_status=str(
+                    item.get("dynamic_safety_gate_status", item.get("safety_gate_status", "review_required"))
+                ),
+                safety_gate_reason=str(
+                    item.get("dynamic_safety_gate_reason", item.get("safety_gate_reason", ""))
+                ),
+                provenance=item.get("provenance"),
             )
         )
     readiness_summary = dict(Counter(item.status for item in plan_items))
@@ -2859,6 +3319,12 @@ def curate_local_wisdom(
         "",
         f"Workflow: {title}",
         "Overview: Hybrid seed retrieval, structural expansion, reranking, topological wave planning, and compact context packaging.",
+        (
+            "Governance: "
+            f"{governance_counts.get('approved', 0)} approved, "
+            f"{governance_counts.get('review_required', 0)} review-required, "
+            f"{governance_counts.get('blocked', 0)} blocked."
+        ),
         f"Readiness: {readiness_summary.get('ready', 0)} ready, {readiness_summary.get('blocked', 0)} blocked.",
         f"Seeds: {len(seed_ids)} direct matches. Bundle: {len(plan_items)} operators after structural expansion.",
         (
@@ -2904,6 +3370,7 @@ def curate_local_wisdom(
             if item.conflicts_with:
                 lines.append(f"   Conflicts: {', '.join(title_lookup.get(dep, dep) for dep in item.conflicts_with)}")
             empirical_reliability = item.reliability.empirical_reliability if item.reliability else 0.0
+            test_artifact_count = len(item.provenance.get("test_artifacts", [])) if item.provenance else 0
             lines.append(
                 "   Score: "
                 f"{item.score:.3f} | Env Match: {item.env_match_score:.3f} | "
@@ -2911,6 +3378,13 @@ def curate_local_wisdom(
                 f"Confidence: {item.confidence:.3f} | "
                 f"Empirical Reliability: {empirical_reliability:.3f}"
             )
+            lines.append(
+                "   Governance: "
+                f"{item.validation_level} | {item.trust_tier} | {item.safety_gate_status} | "
+                f"tests={test_artifact_count}"
+            )
+            if item.safety_gate_reason:
+                lines.append(f"   Safety Gate: {item.safety_gate_reason}")
             if item.should_abstain and item.abstain_reason:
                 lines.append(f"   Abstain: {item.abstain_reason}")
     curation = "\n".join(lines) + "\n"
@@ -2928,6 +3402,11 @@ def curate_local_wisdom(
                 confidence=float(item.confidence),
                 should_abstain=bool(item.should_abstain),
                 abstain_reason=item.abstain_reason,
+                validation_level=item.validation_level,
+                trust_tier=item.trust_tier,
+                safety_gate_status=item.safety_gate_status,
+                safety_gate_reason=item.safety_gate_reason,
+                provenance=item.provenance,
             )
             for item in plan_items
         ],

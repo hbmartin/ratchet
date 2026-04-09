@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import signal
@@ -118,6 +119,13 @@ class LocalStore:
                     content TEXT NOT NULL,
                     metadata_json TEXT NOT NULL,
                     source_path TEXT,
+                    content_digest TEXT NOT NULL DEFAULT '',
+                    validation_level TEXT NOT NULL DEFAULT 'observed',
+                    trust_tier TEXT NOT NULL DEFAULT 'provisional',
+                    safety_gate_status TEXT NOT NULL DEFAULT 'review_required',
+                    safety_gate_reason TEXT NOT NULL DEFAULT '',
+                    last_validated_at TEXT,
+                    provenance_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     embedding_json TEXT
                 );
@@ -136,6 +144,13 @@ class LocalStore:
                     source_artifact TEXT NOT NULL,
                     dependency_ids_json TEXT NOT NULL,
                     feedback_score REAL NOT NULL DEFAULT 0.0,
+                    content_digest TEXT NOT NULL DEFAULT '',
+                    validation_level TEXT NOT NULL DEFAULT 'observed',
+                    trust_tier TEXT NOT NULL DEFAULT 'provisional',
+                    safety_gate_status TEXT NOT NULL DEFAULT 'review_required',
+                    safety_gate_reason TEXT NOT NULL DEFAULT '',
+                    last_validated_at TEXT,
+                    provenance_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     embedding_json TEXT NOT NULL,
                     lexical_text TEXT NOT NULL
@@ -156,6 +171,13 @@ class LocalStore:
                     normalized_intent TEXT NOT NULL,
                     slot_signature TEXT NOT NULL,
                     feedback_score REAL NOT NULL DEFAULT 0.0,
+                    content_digest TEXT NOT NULL DEFAULT '',
+                    validation_level TEXT NOT NULL DEFAULT 'observed',
+                    trust_tier TEXT NOT NULL DEFAULT 'provisional',
+                    safety_gate_status TEXT NOT NULL DEFAULT 'review_required',
+                    safety_gate_reason TEXT NOT NULL DEFAULT '',
+                    last_validated_at TEXT,
+                    provenance_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL
                 );
 
@@ -289,12 +311,18 @@ class LocalStore:
                     ON pipeline_runs(status);
                 CREATE INDEX IF NOT EXISTS idx_artifacts_name_type
                     ON artifacts(name, artifact_type);
+                CREATE INDEX IF NOT EXISTS idx_artifacts_safety_gate
+                    ON artifacts(safety_gate_status, trust_tier);
                 CREATE INDEX IF NOT EXISTS idx_pcr_fragments_artifact
                     ON pcr_fragments(source_artifact);
+                CREATE INDEX IF NOT EXISTS idx_pcr_fragments_safety_gate
+                    ON pcr_fragments(safety_gate_status, trust_tier);
                 CREATE INDEX IF NOT EXISTS idx_operators_project_created
                     ON operators(project_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_operators_intent_signature
                     ON operators(project_id, normalized_intent, slot_signature);
+                CREATE INDEX IF NOT EXISTS idx_operators_safety_gate
+                    ON operators(project_id, safety_gate_status, trust_tier);
                 CREATE INDEX IF NOT EXISTS idx_operator_edges_source_type
                     ON operator_edges(source_operator_id, edge_type);
                 CREATE INDEX IF NOT EXISTS idx_operator_edges_target_type
@@ -320,6 +348,30 @@ class LocalStore:
             self._ensure_column(conn, "curation_feedback", "failure_stage", "TEXT NOT NULL DEFAULT 'unknown'")
             self._ensure_column(conn, "curation_feedback", "should_abstain", "INTEGER NOT NULL DEFAULT 0")
             self._ensure_column(conn, "curation_feedback", "summary_json", "TEXT NOT NULL DEFAULT '{}'")
+            for table_name in ("artifacts", "pcr_fragments", "operators"):
+                self._ensure_column(conn, table_name, "content_digest", "TEXT NOT NULL DEFAULT ''")
+                self._ensure_column(
+                    conn, table_name, "validation_level", "TEXT NOT NULL DEFAULT 'observed'"
+                )
+                self._ensure_column(
+                    conn, table_name, "trust_tier", "TEXT NOT NULL DEFAULT 'provisional'"
+                )
+                self._ensure_column(
+                    conn,
+                    table_name,
+                    "safety_gate_status",
+                    "TEXT NOT NULL DEFAULT 'review_required'",
+                )
+                self._ensure_column(
+                    conn,
+                    table_name,
+                    "safety_gate_reason",
+                    "TEXT NOT NULL DEFAULT ''",
+                )
+                self._ensure_column(conn, table_name, "last_validated_at", "TEXT")
+                self._ensure_column(
+                    conn, table_name, "provenance_json", "TEXT NOT NULL DEFAULT '{}'"
+                )
 
     def project_knowledge_dir(self) -> Path:
         root = data_dir() / "knowledge"
@@ -639,6 +691,69 @@ class LocalStore:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def _payload_text_for_digest(self, payload: dict[str, Any]) -> str:
+        if isinstance(payload.get("content"), str) and payload["content"].strip():
+            return payload["content"]
+        return "\n".join(
+            str(payload.get(key, "")).strip()
+            for key in ("name", "title", "procedure", "context", "resultant", "outcome", "lexical_text")
+            if str(payload.get(key, "")).strip()
+        )
+
+    def _normalized_governance(self, payload: dict[str, Any]) -> dict[str, Any]:
+        metadata = payload.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        provenance = payload.get("provenance", metadata.get("provenance", {}))
+        if isinstance(provenance, str):
+            try:
+                provenance = json.loads(provenance)
+            except json.JSONDecodeError:
+                provenance = {}
+        if not isinstance(provenance, dict):
+            provenance = {}
+        validation_level = str(
+            payload.get("validation_level")
+            or metadata.get("validation_level")
+            or ("verified" if payload.get("source_path") else "observed")
+        )
+        trust_tier = str(
+            payload.get("trust_tier")
+            or metadata.get("trust_tier")
+            or ("trusted" if validation_level in {"verified", "reproduced"} else "provisional")
+        )
+        safety_gate_status = str(
+            payload.get("safety_gate_status")
+            or metadata.get("safety_gate_status")
+            or ("approved" if validation_level in {"verified", "reproduced"} else "review_required")
+        )
+        safety_gate_reason = str(
+            payload.get("safety_gate_reason")
+            or metadata.get("safety_gate_reason")
+            or ""
+        )
+        content_digest = str(payload.get("content_digest") or metadata.get("content_digest") or "").strip()
+        if not content_digest:
+            text_for_digest = self._payload_text_for_digest(payload)
+            content_digest = (
+                hashlib.sha256(text_for_digest.encode("utf-8")).hexdigest()
+                if text_for_digest
+                else ""
+            )
+        last_validated_at = (
+            str(payload.get("last_validated_at") or metadata.get("last_validated_at") or "").strip()
+            or str(payload.get("created_at", "")).strip()
+            or None
+        )
+        return {
+            "content_digest": content_digest,
+            "validation_level": validation_level,
+            "trust_tier": trust_tier,
+            "safety_gate_status": safety_gate_status,
+            "safety_gate_reason": safety_gate_reason,
+            "last_validated_at": last_validated_at,
+            "provenance_json": json.dumps(provenance),
+        }
+
     def save_artifacts(
         self,
         *,
@@ -652,15 +767,29 @@ class LocalStore:
         pcr_payloads = pcr_payloads or []
         operator_payloads = operator_payloads or []
         with self._connect() as conn:
+            artifact_governance_by_id: dict[str, dict[str, Any]] = {}
             for artifact in artifact_payloads:
+                governance = self._normalized_governance(artifact)
+                artifact_governance_by_id[artifact["artifact_id"]] = {
+                    "content_digest": governance["content_digest"],
+                    "validation_level": governance["validation_level"],
+                    "trust_tier": governance["trust_tier"],
+                    "safety_gate_status": governance["safety_gate_status"],
+                    "safety_gate_reason": governance["safety_gate_reason"],
+                    "last_validated_at": governance["last_validated_at"],
+                    "provenance": json.loads(governance["provenance_json"]),
+                }
                 conn.execute("DELETE FROM artifacts WHERE artifact_id=?", (artifact["artifact_id"],))
                 conn.execute(
                     """
                     INSERT INTO artifacts(
                         artifact_id, run_id, project_id, session_id, artifact_type,
-                        name, version, content, metadata_json, source_path, created_at, embedding_json
+                        name, version, content, metadata_json, source_path,
+                        content_digest, validation_level, trust_tier,
+                        safety_gate_status, safety_gate_reason, last_validated_at,
+                        provenance_json, created_at, embedding_json
                     )
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         artifact["artifact_id"],
@@ -673,21 +802,32 @@ class LocalStore:
                         artifact["content"],
                         json.dumps(artifact["metadata"]),
                         artifact.get("source_path"),
+                        governance["content_digest"],
+                        governance["validation_level"],
+                        governance["trust_tier"],
+                        governance["safety_gate_status"],
+                        governance["safety_gate_reason"],
+                        governance["last_validated_at"],
+                        governance["provenance_json"],
                         artifact["created_at"],
                         json.dumps(artifact["embedding"]),
                     ),
                 )
             for fragment in pcr_payloads:
+                fragment_seed = {**artifact_governance_by_id.get(fragment["artifact_id"], {}), **fragment}
+                governance = self._normalized_governance(fragment_seed)
                 conn.execute("DELETE FROM pcr_fragments WHERE fragment_id=?", (fragment["fragment_id"],))
                 conn.execute(
                     """
                     INSERT INTO pcr_fragments(
                         fragment_id, artifact_id, run_id, project_id, name,
                         procedure, context, resultant, constraints, evidence_refs_json,
-                        source_artifact, dependency_ids_json, feedback_score, created_at,
-                        embedding_json, lexical_text
+                        source_artifact, dependency_ids_json, feedback_score,
+                        content_digest, validation_level, trust_tier,
+                        safety_gate_status, safety_gate_reason, last_validated_at,
+                        provenance_json, created_at, embedding_json, lexical_text
                     )
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         fragment["fragment_id"],
@@ -703,6 +843,13 @@ class LocalStore:
                         fragment["source_artifact"],
                         json.dumps(fragment["dependency_ids"]),
                         float(fragment.get("feedback_score", 0.0)),
+                        governance["content_digest"],
+                        governance["validation_level"],
+                        governance["trust_tier"],
+                        governance["safety_gate_status"],
+                        governance["safety_gate_reason"],
+                        governance["last_validated_at"],
+                        governance["provenance_json"],
                         fragment["created_at"],
                         json.dumps(fragment["embedding"]),
                         fragment["lexical_text"],
@@ -724,15 +871,20 @@ class LocalStore:
                 for payload in operator_payloads
             }
             for operator in operator_payloads:
+                operator_seed = {**artifact_governance_by_id.get(operator["artifact_id"], {}), **operator}
+                governance = self._normalized_governance(operator_seed)
                 self._delete_operator_graph(conn, operator["operator_id"])
                 conn.execute(
                     """
                     INSERT INTO operators(
                         operator_id, artifact_id, run_id, project_id, session_id, name,
                         title, procedure, context, outcome, source_artifact,
-                        normalized_intent, slot_signature, feedback_score, created_at
+                        normalized_intent, slot_signature, feedback_score,
+                        content_digest, validation_level, trust_tier,
+                        safety_gate_status, safety_gate_reason, last_validated_at,
+                        provenance_json, created_at
                     )
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         operator["operator_id"],
@@ -749,6 +901,13 @@ class LocalStore:
                         operator["normalized_intent"],
                         operator["slot_signature"],
                         float(operator.get("feedback_score", 0.0)),
+                        governance["content_digest"],
+                        governance["validation_level"],
+                        governance["trust_tier"],
+                        governance["safety_gate_status"],
+                        governance["safety_gate_reason"],
+                        governance["last_validated_at"],
+                        governance["provenance_json"],
                         operator["created_at"],
                     ),
                 )
@@ -913,7 +1072,15 @@ class LocalStore:
                 ORDER BY p.created_at DESC
                 """
             ).fetchall()
-        return [dict(row) for row in rows]
+        fragments: list[dict[str, Any]] = []
+        for row in rows:
+            payload = dict(row)
+            try:
+                payload["provenance"] = json.loads(payload.get("provenance_json") or "{}")
+            except json.JSONDecodeError:
+                payload["provenance"] = {}
+            fragments.append(payload)
+        return fragments
 
     def fetch_operators(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -947,6 +1114,10 @@ class LocalStore:
         operators: list[dict[str, Any]] = []
         for row in operator_rows:
             operator_id = row["operator_id"]
+            try:
+                provenance = json.loads(row["provenance_json"] or "{}")
+            except json.JSONDecodeError:
+                provenance = {}
             operators.append(
                 {
                     **dict(row),
@@ -961,6 +1132,7 @@ class LocalStore:
                     "postconditions": postconditions.get(operator_id, []),
                     "slots": slots.get(operator_id, []),
                     "env_fingerprint": fingerprints.get(operator_id, {}),
+                    "provenance": provenance,
                     "reliability": self._summarize_operator_reliability(
                         reliability_rows.get(operator_id)
                     ).model_dump(),

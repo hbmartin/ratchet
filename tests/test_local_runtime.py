@@ -372,6 +372,53 @@ def test_correction_learning_persists_pcr_fragments(tmp_path, monkeypatch):
     assert metadata["correction_count"] >= 2
 
 
+def test_distilled_skill_metadata_includes_governance(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    store = LocalStore()
+    auth_a = _make_turnset(
+        "gov-a",
+        tmp_path / "collector" / "gov-a",
+        project_root,
+        recovery_message="Inspect the failing refresh request and patch the auth branch before retrying.",
+        recovery_command="rg -n refresh_token src/auth.py tests/test_auth.py",
+    )
+    auth_b = _make_turnset(
+        "gov-b",
+        tmp_path / "collector" / "gov-b",
+        project_root,
+        prompt="Repair the auth refresh token regression and verify it.",
+        verify_command="pytest tests/test_auth.py -k refresh",
+        recovery_message="Inspect the failing refresh request and patch the auth branch before retrying.",
+        recovery_command="rg -n refresh_token src/auth.py tests/test_auth.py",
+    )
+    run_id = _create_run(store, project_id="proj-governance", project_path=project_root, session_id=None)
+    monkeypatch.setattr(
+        local_runtime,
+        "load_turnsets_for_run",
+        lambda config, store: [auth_a, auth_b],
+    )
+
+    outputs = local_runtime.run_local_pipeline(run_id, store=store)
+
+    metadata = json.loads(outputs.pending_skills[0].metadata)
+    assert metadata["validation_passed"] is True
+    assert metadata["validation_level"] == "reproduced"
+    assert metadata["trust_tier"] in {"trusted", "hardened"}
+    assert metadata["safety_gate_status"] == "approved"
+    assert metadata["content_digest"]
+    assert metadata["provenance"]["test_artifacts"]
+    assert metadata["provenance"]["revalidation_triggers"]
+    assert metadata["provenance"]["rollback_lineage"]
+    fragments = store.fetch_fragments()
+    assert fragments[0]["validation_level"] == "reproduced"
+    assert fragments[0]["trust_tier"] in {"trusted", "hardened"}
+    assert fragments[0]["safety_gate_status"] == "approved"
+    assert fragments[0]["provenance"]["source_artifact_digest"]
+
+
 def test_curation_ignores_superseded_cluster_operators(tmp_path, monkeypatch):
     monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")

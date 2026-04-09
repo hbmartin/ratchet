@@ -36,7 +36,7 @@ __all__ = [
 ]
 
 from pathlib import Path
-from typing import Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -78,6 +78,16 @@ class PendingSkillData(BaseModel):
     author: str = ""
     version: str = ""
     tags: list[str] = Field(default_factory=list)
+    validation_level: str = Field(default="observed", description="Validation maturity for this skill")
+    trust_tier: str = Field(default="provisional", description="Trust tier for this skill")
+    safety_gate_status: str = Field(
+        default="review_required",
+        description="Whether the skill is approved to influence future sessions",
+    )
+    safety_gate_reason: str = Field(
+        default="",
+        description="Short explanation for the current safety gate status",
+    )
 
 
 class SkillArtifactData(BaseModel):
@@ -256,6 +266,26 @@ class WisdomResultItem(BaseModel):
         default="",
         description="Short explanation for why the system would abstain on this wisdom",
     )
+    validation_level: str = Field(
+        default="observed",
+        description="Validation maturity attached to the retrieved wisdom",
+    )
+    trust_tier: str = Field(
+        default="provisional",
+        description="Trust tier attached to the retrieved wisdom",
+    )
+    safety_gate_status: str = Field(
+        default="review_required",
+        description="Safety gate outcome for this wisdom item",
+    )
+    safety_gate_reason: str = Field(
+        default="",
+        description="Why this wisdom item received its safety gate status",
+    )
+    provenance: dict[str, Any] | None = Field(
+        default=None,
+        description="Validation, provenance, and revalidation metadata for this wisdom item",
+    )
 
 
 class ReliabilityMetrics(BaseModel):
@@ -382,6 +412,26 @@ class OperatorPlanItem(BaseModel):
     reliability: ReliabilityMetrics | None = Field(
         default=None,
         description="Empirical reliability summary for this operator",
+    )
+    validation_level: str = Field(
+        default="observed",
+        description="Validation maturity attached to this operator",
+    )
+    trust_tier: str = Field(
+        default="provisional",
+        description="Trust tier attached to this operator",
+    )
+    safety_gate_status: str = Field(
+        default="review_required",
+        description="Safety gate outcome for this operator",
+    )
+    safety_gate_reason: str = Field(
+        default="",
+        description="Why this operator received its safety gate status",
+    )
+    provenance: dict[str, Any] | None = Field(
+        default=None,
+        description="Validation, provenance, and revalidation metadata for this operator",
     )
 
 

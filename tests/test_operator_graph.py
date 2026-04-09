@@ -482,6 +482,46 @@ def test_curate_marks_missing_preconditions_and_slots_blocked(tmp_path, monkeypa
     assert "target_path" in item.missing_slots
 
 
+def test_curate_excludes_review_required_operator(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    _prepare_project_root(tmp_path, monkeypatch)
+    store = LocalStore()
+
+    payload = _operator_payload(
+        artifact_id="placeholder",
+        artifact_name="review-required-skill",
+        title="Use unverified deployment shortcut",
+        procedure="Use the unverified deployment shortcut.",
+        context="python uv deployment shortcut",
+        outcome="deployment completes quickly",
+    )
+    payload.update(
+        {
+            "validation_level": "observed",
+            "trust_tier": "provisional",
+            "safety_gate_status": "review_required",
+            "safety_gate_reason": "Needs a successful verification artifact before reuse.",
+            "provenance": {
+                "source_sessions": ["session-review-required"],
+                "source_paths": ["deploy.py"],
+                "evidence_digest": "digest-review-required",
+                "test_artifacts": [],
+                "revalidation_triggers": ["source_artifact_digest_changed"],
+                "rollback_lineage": [],
+            },
+        }
+    )
+    _persist_operators(store=store, tmp_path=tmp_path, operators=[payload])
+
+    result = curate_local_wisdom(query="deployment shortcut", top_k=1, store=store)
+
+    assert result.operator_plan == []
+    assert result.should_abstain is True
+    assert "safety gate" in result.abstain_reason.lower()
+    assert "none passed the validation/trust safety gate" in result.curation.lower()
+
+
 def test_feedback_increases_operator_rank(tmp_path, monkeypatch):
     monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
