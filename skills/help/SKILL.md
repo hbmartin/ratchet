@@ -10,7 +10,7 @@ allowed-tools: Read
 
 | Command | Description |
 |---------|-------------|
-| `/mega-code:login` | Sign in via GitHub or Google OAuth |
+| `/mega-code:login` | Show local provider-key setup help |
 | `/mega-code:wisdom-gen` | Run skill extraction pipeline |
 | `/mega-code:skill-enhance` | Evaluate and enhance a skill with A/B testing |
 | `/mega-code:wisdom-curate` | Curate a wisdom-backed workflow with skill installation |
@@ -63,7 +63,8 @@ The `--model` flag for `/mega-code:wisdom-gen` accepts any model alias supported
 | `gemini-3-flash` | Google |
 | `gpt-5-mini` | OpenAI |
 
-When no model is specified, the server selects the best model based on your configured LLM keys.
+When no model is specified, the local runtime prefers Gemini when configured,
+otherwise OpenAI.
 
 
 ## Tips

@@ -19,7 +19,7 @@ Usage:
     python -m mega_code.client.run_pipeline
     python -m mega_code.client.run_pipeline --project
     python -m mega_code.client.run_pipeline --project @mega-code
-    python -m mega_code.client.run_pipeline --model gemini-3-flash
+    python -m mega_code.client.run_pipeline --model gemini-2.5-flash
     python -m mega_code.client.run_pipeline --project --include-claude
     python -m mega_code.client.run_pipeline --poll-existing <run_id> --project <project_id>
 """
@@ -96,13 +96,13 @@ Project argument formats:
         "--model",
         type=str,
         default=None,
-        help="LLM model for pipeline (default: server picks). e.g. gemini-3-flash, gpt-5-mini",
+        help="Optional local provider model override (e.g. gemini-2.5-flash, gpt-5-mini).",
     )
     parser.add_argument(
         "--mode",
         choices=["local", "remote"],
         default=None,
-        help="Execution mode. Default: auto-detect from MEGA_CODE_CLIENT_MODE.",
+        help="Deprecated. OSS always uses local mode.",
     )
     parser.add_argument(
         "--debug",
@@ -113,10 +113,7 @@ Project argument formats:
         "--storage",
         type=str,
         default=None,
-        help=(
-            "Storage backend for pipeline ('local' or 'postgres'). "
-            "Default: MEGA_CODE_PIPELINE_STORAGE env var or 'local'."
-        ),
+        help="Storage backend label for the local runtime (default: 'local').",
     )
     parser.add_argument(
         "--force",
@@ -223,11 +220,11 @@ async def main():
         resolve_project_path,
     )
 
-    model_name = args.model  # None → server picks best model from user's BYOK keys
+    model_name = args.model
     if model_name:
         logger.info(f"Using model: {model_name}")
     else:
-        logger.info("Model not specified — server will select based on configured LLM keys")
+        logger.info("Model not specified — local runtime will choose based on configured provider keys")
 
     # Resolve include flags
     include_claude = args.include_claude or args.include_all

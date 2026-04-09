@@ -121,6 +121,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     data_root = get_data_dir()
     data_dir = get_projects_data_dir()
     plugin_root = _get_plugin_root()
+    env_vars = load_env_file(get_env_path())
 
     print("MEGA-Code Status")
     print("=" * 60)
@@ -141,16 +142,18 @@ def cmd_status(args: argparse.Namespace) -> int:
         try:
             with open(profile_path) as f:
                 profile = json.load(f)
-            api_key = profile.get("api_key", "")
-            server_url = profile.get("server_url", "")
-            client_mode = profile.get("client_mode", "local")
-            print(f"   API Key: {'configured' if api_key else 'not set'}")
-            print(f"   Server URL: {server_url or 'not set'}")
-            print(f"   Client Mode: {client_mode}")
+            print(f"   Language: {profile.get('language') or 'not set'}")
+            print(f"   Level: {profile.get('level') or 'not set'}")
+            print(f"   Style: {profile.get('style') or 'not set'}")
         except (json.JSONDecodeError, OSError):
             print("   Status: Error reading profile")
     else:
         print("   Status: Not initialized (will be created on first session)")
+
+    print("\nLocal Runtime:")
+    print("   Client Mode: local")
+    print(f"   Gemini Key: {'configured' if env_vars.get('GEMINI_API_KEY') else 'not set'}")
+    print(f"   OpenAI Key: {'configured' if env_vars.get('OPENAI_API_KEY') else 'not set'}")
 
     # Check Python environment
     if plugin_root:
@@ -195,9 +198,6 @@ def cmd_configure(args: argparse.Namespace) -> int:
 
     # (arg_name, env_var_key, is_secret)
     _CONFIG_FIELDS = [
-        ("user_id", "MEGA_CODE_USER_ID", False),
-        ("api_key", "MEGA_CODE_API_KEY", True),
-        ("server_url", "MEGA_CODE_SERVER_URL", False),
         ("client_mode", "MEGA_CODE_CLIENT_MODE", False),
         ("openai_api_key", "OPENAI_API_KEY", True),
         ("gemini_api_key", "GEMINI_API_KEY", True),
@@ -229,13 +229,17 @@ def cmd_configure(args: argparse.Namespace) -> int:
 
 
 def cmd_login(args: argparse.Namespace) -> int:
-    """Login to MEGA-Code via OAuth."""
-    from mega_code.client.login import run_login
+    """Legacy login shim.
 
-    kwargs: dict = {"base_url": args.url}
-    if args.provider is not None:
-        kwargs["provider"] = args.provider
-    return run_login(**kwargs)
+    Local mode no longer uses MEGA-Code OAuth. Keep the command so existing
+    skills and muscle memory do not crash, but point users at local setup.
+    """
+    _ = args
+    print("Login is deprecated in local mode.")
+    print("Configure a provider key instead:")
+    print("  mega-code configure --gemini-api-key <key>")
+    print("  mega-code configure --openai-api-key <key>")
+    return 0
 
 
 def cmd_profile(args: argparse.Namespace) -> int:
@@ -308,13 +312,9 @@ def cmd_profile(args: argparse.Namespace) -> int:
 def cmd_pipeline_status(args: argparse.Namespace) -> int:
     """Show active pipeline runs."""
     from mega_code.client.api import create_client
-    from mega_code.client.api.remote import MegaCodeRemote
 
     _load_env()
     client = create_client()
-    if not isinstance(client, MegaCodeRemote):
-        print("Pipeline status requires remote mode.")
-        return 0
 
     try:
         result = client.get_active_pipelines()
@@ -348,13 +348,9 @@ def cmd_pipeline_status(args: argparse.Namespace) -> int:
 def cmd_pipeline_stop(args: argparse.Namespace) -> int:
     """Stop a running pipeline by run_id."""
     from mega_code.client.api import create_client
-    from mega_code.client.api.remote import MegaCodeRemote
 
     _load_env()
     client = create_client()
-    if not isinstance(client, MegaCodeRemote):
-        print(json.dumps({"error": "pipeline-stop requires remote mode"}))
-        return 1
 
     try:
         result = client.stop_pipeline(run_id=args.run_id)
@@ -369,13 +365,9 @@ def cmd_pipeline_stop(args: argparse.Namespace) -> int:
 def cmd_wisdom_curate(args: argparse.Namespace) -> int:
     """Curate wisdoms for a problem description."""
     from mega_code.client.api import create_client
-    from mega_code.client.api.remote import MegaCodeRemote
 
     _load_env()
     client = create_client()
-    if not isinstance(client, MegaCodeRemote):
-        print("Wisdom curate requires remote mode.", file=sys.stderr)
-        return 1
 
     query = " ".join(args.query)
     try:
@@ -391,13 +383,9 @@ def cmd_wisdom_curate(args: argparse.Namespace) -> int:
 def cmd_wisdom_feedback(args: argparse.Namespace) -> int:
     """Submit feedback on a wisdom curate session."""
     from mega_code.client.api import create_client
-    from mega_code.client.api.remote import MegaCodeRemote
 
     _load_env()
     client = create_client()
-    if not isinstance(client, MegaCodeRemote):
-        print("Wisdom feedback requires remote mode.", file=sys.stderr)
-        return 1
 
     try:
         result = client.wisdom_feedback(
@@ -452,12 +440,6 @@ def main():
         choices=["github", "google"],
         default=None,  # defers to login.run_login default
         help="OAuth provider (default: google)",
-    )
-    login_parser.add_argument(
-        "--url",
-        type=str,
-        default=None,
-        help="mega-service API URL (overrides MEGA_CODE_SERVER_URL-derived URL)",
     )
 
     # Profile command

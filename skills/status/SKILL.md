@@ -11,13 +11,14 @@ Show current MEGA-Code status and pending items.
 ## Setup
 
 ```bash
-MEGA_DIR="$(cd "${CLAUDE_SKILL_DIR}/../.." && pwd)"
+MEGA_DIR="${CLAUDE_PLUGIN_ROOT:-$(cat ~/.local/share/mega-code/plugin-root 2>/dev/null)}"
+set -a && . "$MEGA_DIR/.env" 2>/dev/null && set +a
 uv run --directory "$MEGA_DIR" python -m mega_code.client.check_auth
 ```
 
 If the auth check fails (non-zero exit), show the output to the user and stop.
 
-## Pipeline Status
+## Local Pipeline Status
 
 ```bash
 uv run --directory "$MEGA_DIR" mega-code pipeline-status 2>/dev/null || true
@@ -64,5 +65,5 @@ fi
 
 | Type | Pending Location | Installed Location |
 |------|------------------|-------------------|
-| Skills | `~/.local/share/mega-code/data/pending-skills/{name}/` | `.claude/skills/{name}/SKILL.md` |
+| Skills | `~/.local/share/mega-code/data/pending-skills/{name}/` | `{data_dir}/skills/{name}/SKILL.md` |
 | Strategies | `~/.local/share/mega-code/data/pending-strategies/{name}.md` | `.claude/rules/mega-code/{name}.md` |

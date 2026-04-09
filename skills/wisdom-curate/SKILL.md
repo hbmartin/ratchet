@@ -1,19 +1,20 @@
 ---
-description: Curate a wisdom-backed workflow — retrieves relevant wisdoms from the PCR Wisdom Graph, curates skills, offers installation, and optionally runs the task.
+description: Curate a wisdom-backed workflow from the local PCR store, install local skills, and optionally run the task.
 argument-hint: "<problem description>"
 allowed-tools: Bash, Read, Write, Glob, AskUserQuestion
 ---
 
-# Wisdom Curate — PCR Skill Network
+# Wisdom Curate — Local PCR Network
 
-Retrieve relevant wisdoms from the knowledge graph, curate them into a
+Retrieve relevant wisdoms from the local knowledge store, curate them into a
 step-by-step workflow, install recommended skills, and optionally
 execute the task.
 
 ## Setup
 
 ```bash
-MEGA_DIR="$(cd "${CLAUDE_SKILL_DIR}/../.." && pwd)"
+MEGA_DIR="${CLAUDE_PLUGIN_ROOT:-$(cat ~/.local/share/mega-code/plugin-root 2>/dev/null)}"
+set -a && . "$MEGA_DIR/.env" 2>/dev/null && set +a
 uv run --directory "$MEGA_DIR" python -m mega_code.client.check_auth
 ```
 
@@ -41,8 +42,8 @@ Skills and curations are stored under this directory:
 ```
 
 Each curation JSON contains: session_id, query, curation (markdown workflow),
-skills (list of {name, path, url}), wisdoms, token_count, cost_usd,
-created_at, status.
+skills (list of local `{name, path, url}` references), wisdoms, token_count,
+cost_usd, created_at, status.
 
 Key Python functions for skill/curation access:
 - `mega_code.client.dirs.data_dir()` → data root path
@@ -173,7 +174,8 @@ Would you like to install the 2 new skills? (Yes / Skip)
 
 ## Step 5: Install Skills
 
-For each not-yet-installed skill, download and install from its presigned URL:
+For each not-yet-installed skill, install from the local source path returned
+by `wisdom-curate`:
 
 Write the JSON array of not-yet-installed skills from Step 3 to a temp file,
 then pass the file path to the installer:
@@ -197,7 +199,7 @@ for name, status in results.items():
 " "$SKILLS_JSON_FILE"
 ```
 
-Skills are extracted to `{data_dir()}/skills/{skill-name}/`.
+Skills are copied to `{data_dir()}/skills/{skill-name}/`.
 
 Report per-skill status:
 ```

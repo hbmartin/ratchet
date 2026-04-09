@@ -206,77 +206,27 @@ In a Claude Code session, run:
 
 Restart Claude Code to load the plugin.
 
-### Step 2 — Sign in
+### Step 2 — Configure a local model key
 
 ```
-/mega-code:login
+mega-code configure --gemini-api-key <your_key>
 ```
 
-Authenticates via GitHub or Google. Your API key is saved automatically.
-
-### Step 3 — Add your own LLM API key
-
-MEGA Code uses a **Bring Your Own Key (BYOK)** model — you supply your own Gemini or OpenAI key.
-
-Visit [console.megacode.ai](https://console.megacode.ai) → **Account → API Keys** to register your key.
-
-### Step 4 — Run in any project
+or:
 
 ```
+mega-code configure --openai-api-key <your_key>
+```
+
+MEGA Code now runs as a local-first runtime. It does not require MEGA-Code OAuth for normal use.
+
+### Step 3 — Run in any project
+
+```bash
 /mega-code:wisdom-gen         # Generate skills and strategies from session traces
 /mega-code:wisdom-curate      # Retrieve the right skills, workflows, and cheatmaps for your intent
 /mega-code:skill-enhance      # Evaluate skills, measure ROI, and generate enhanced versions
-/mega-code:status             # Check results and pipeline status
-```
-
----
-
-## Codex Support
-
-MEGA Code also works with [OpenAI Codex CLI](https://github.com/openai/codex). Install from the `codex` branch:
-
-```bash
-npx skills add https://github.com/wisdomgraph/mega-code/tree/codex -a codex
-```
-
-For Codex-specific commands and usage, see the [Codex branch README](https://github.com/wisdomgraph/mega-code/tree/codex).
-
----
-
-## Free to Start
-
-MEGA Code is currently free to use — just bring your own LLM API key (Gemini or OpenAI).
-
-The current release includes:
-- **wisdom-gen** for generating Skills and Strategies from coding sessions
-- **wisdom-curate** for retrieving relevant workflows and Cheatmaps from the Wisdom Graph DB
-- **skill-enhance** for evaluating skills and generating enhanced versions with ROI insights
-
----
-
-## Available Commands
-
-| Command | Description |
-|---|---|
-| `/mega-code:login` | Sign in via GitHub or Google OAuth |
-| `/mega-code:wisdom-gen` | Generate Skills and Strategies from session traces |
-| `/mega-code:wisdom-curate` | Retrieve relevant Skills, workflows, and Cheatmaps for your current intent |
-| `/mega-code:skill-enhance` | Evaluate and enhance a Skill with ROI analysis |
-| `/mega-code:status` | Show generated assets and pipeline status |
-| `/mega-code:stop` | Stop a running pipeline |
-| `/mega-code:profile` | View or update your developer profile (language, level, style) |
-| `/mega-code:help` | Show help and reference |
-
-### Example Session
-
-```bash
-/mega-code:login                    # Sign in (first time)
-/mega-code:profile                  # Set your language, level, and style
-/mega-code:wisdom-gen --project     # Generate skills and strategies from project session traces
-/mega-code:wisdom-curate            # Retrieve the best workflow and cheatmap for the current task
-/mega-code:skill-enhance <skill>    # Evaluate and enhance a skill
-/mega-code:status                   # See what was generated
-/mega-code:stop                     # Stop a pipeline if needed
+/mega-code:status             # Check results and local pipeline status
 ```
 
 ---
@@ -348,16 +298,12 @@ grouped by working directory.
 When no explicit project or session is given, the current working directory is
 hashed to locate its data folder under `~/.local/share/mega-code/projects/`.
 
-### Trajectory sync
+### Local ingest
 
-Before triggering the pipeline, sessions are uploaded to the server.
-The sync process uses a **ledger file** per project to track which sessions
-have already been uploaded. Ledgers are stored in
-`~/.local/share/mega-code/projects/{project_id}/`:
-
-| Ledger file | Tracks |
-|---|---|
-| `sync-ledger.json` | mega-code's own sessions (and Claude Code native sessions) |
+Before triggering the pipeline, MEGA Code persists normalized `TurnSet`
+trajectories locally. The local worker then reads those stored turns or falls
+back to the collected session history under
+`~/.local/share/mega-code/projects/{project_id}/`.
 | `codex-sync-ledger.json` | Codex CLI sessions |
 
 - Sessions not in the ledger are uploaded.

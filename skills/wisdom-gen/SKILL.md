@@ -5,18 +5,14 @@ allowed-tools: Bash, Read, Write, Edit, AskUserQuestion
 disable-model-invocation: true
 ---
 
-# Run Skill Extraction Pipeline
+# Run Local Skill Extraction Pipeline
 
 Extract reusable skills and coding strategies from your Claude Code sessions.
 
-## ⚠️ Important: Pipeline is Long-Running
+## ⚠️ Important: Pipeline Is Asynchronous
 
-The pipeline command **blocks until the server finishes processing**. The server
-runs the pipeline asynchronously and this client polls for completion.
-
-**DO NOT interrupt the command (Ctrl+C) while it is running.** Silence with no
-new output for several minutes is **completely normal** during LLM inference
-(especially with `gpt-5-mini` or other reasoning models).
+The command schedules a local background worker, then polls the local runtime
+until it reaches a terminal status.
 
 The default poll timeout is **20 minutes**. For longer runs, use `--poll-timeout`:
 - `--poll-timeout 3600` — wait up to 1 hour
@@ -25,7 +21,8 @@ The default poll timeout is **20 minutes**. For longer runs, use `--poll-timeout
 ## Setup
 
 ```bash
-MEGA_DIR="$(cd "${CLAUDE_SKILL_DIR}/../.." && pwd)"
+MEGA_DIR="${CLAUDE_PLUGIN_ROOT:-$(cat ~/.local/share/mega-code/plugin-root 2>/dev/null)}"
+set -a && . "$MEGA_DIR/.env" 2>/dev/null && set +a
 uv run --directory "$MEGA_DIR" python -m mega_code.client.check_auth
 ```
 
@@ -41,7 +38,7 @@ All commands below assume `MEGA_DIR` is set.
 | `--project` | All sessions in current project |
 | `--project @name` | Specific project by name prefix |
 | `--session-id <uuid>` | Specific session |
-| `--model <alias>` | LLM model (default: server picks best) |
+| `--model <alias>` | Optional local provider model override |
 | `--poll-timeout <seconds>` | Max seconds to poll for completion (default: 1200 = 20 min; 0 = indefinite) |
 | `--include-claude` | Include related Claude Code sessions from the project |
 
@@ -66,10 +63,11 @@ Tell the user the log path so they can monitor with `tail -f` or check after com
 
 | Alias | Provider |
 |-------|----------|
-| `gemini-3-flash` | Google |
+| `gemini-2.5-flash` | Google |
 | `gpt-5-mini` | OpenAI |
 
-When omitted, server selects based on configured LLM keys (priority: Gemini > OpenAI). Falls back to `gemini-3-flash`.
+When omitted, the local runtime prefers Gemini when `GEMINI_API_KEY` is set,
+otherwise OpenAI when `OPENAI_API_KEY` is set.
 
 ## Pipeline Outputs
 
@@ -106,10 +104,11 @@ Then follow the Post-Pipeline Workflow as normal.
 **Option 3 — Leave it running:**
 Return immediately. Do not print anything or ask further questions.
 
-## Handling Server Timeout (Exit Code 3)
+## Handling Local Timeout (Exit Code 3)
 
-If the pipeline command exits with code **3**, the pipeline exceeded the server's
-max runtime and was terminated. Parse the JSON output for `timeout.error` details.
+If the pipeline command exits with code **3**, the local poll timeout was hit
+before the worker reached a terminal status. Parse the JSON output for
+`timeout.error` details.
 
 Use the `AskUserQuestion` tool to present these options:
 

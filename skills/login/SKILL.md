@@ -1,69 +1,39 @@
 ---
-description: Sign in to MEGA-Code via GitHub or Google OAuth to get an API key.
-argument-hint: "[--provider github|google] [--url https://console.megacode.ai]"
-allowed-tools: Bash, Read, AskUserQuestion
+description: Show the local MEGA-Code setup steps for configuring Gemini or OpenAI keys.
+argument-hint: ""
+allowed-tools: Bash, Read
 ---
 
-# Login to MEGA-Code
+# Configure Local Provider Keys
 
-Authenticate with MEGA-Code to obtain an API key using a two-step OAuth flow.
+MEGA-Code now runs in local mode by default. OAuth login is no longer required
+for normal use.
 
 ## Setup
 
 ```bash
-MEGA_DIR="$(cd "${CLAUDE_SKILL_DIR}/../.." && pwd)"
+MEGA_DIR="${CLAUDE_PLUGIN_ROOT:-$(cat ~/.local/share/mega-code/plugin-root 2>/dev/null)}"
+set -a && . "$MEGA_DIR/.env" 2>/dev/null && set +a
 ```
 
-## Step 1: Create session (fast, non-blocking)
+## Configure Gemini
 
 ```bash
-uv run --directory "$MEGA_DIR" python -m mega_code.client.login --step create [--url URL]
+uv run --directory "$MEGA_DIR" mega-code configure --gemini-api-key <your_key>
 ```
 
-Add `--provider github` for GitHub OAuth instead of Google.
-Add `--url URL` to specify the server (default: `https://console.megacode.ai`).
-
-Returns a **JSON object** to stdout:
-
-```json
-{"login_url": "https://...", "client_id": "abc-123", "base_url": "https://..."}
-```
-
-On error, the JSON has an `error` field instead.
-
-**After getting the JSON:**
-1. Parse the output as JSON
-2. Show `login_url` to the user — tell them to open it in their browser
-3. Save `client_id` and `base_url` for Step 2
-
-## Step 2: Poll for completion (run in background)
+## Configure OpenAI
 
 ```bash
-uv run --directory "$MEGA_DIR" python -m mega_code.client.login \
-  --step poll --client-id CLIENT_ID --url BASE_URL
+uv run --directory "$MEGA_DIR" mega-code configure --openai-api-key <your_key>
 ```
-
-Replace `CLIENT_ID` and `BASE_URL` with values from Step 1.
-Run this **in the background** so the user is not blocked.
-
-On success, saves to `~/.local/share/mega-code/.env` (stable, version-independent):
-- `MEGA_CODE_API_KEY`, `MEGA_CODE_CLIENT_MODE=remote`, `MEGA_CODE_SERVER_URL`
-- Prints "Login successful!" and exits
-
-Polls every 3s, times out after 10 minutes.
 
 ## Verify
 
-Credentials are stored in the stable data directory, not the versioned plugin dir.
-Do **not** print the raw API key — mask it.
-
 ```bash
-grep -E "MEGA_CODE_(API_KEY|CLIENT_MODE|SERVER_URL)" "$HOME/.local/share/mega-code/.env" \
-  | sed -E 's/(MEGA_CODE_API_KEY=.{6}).*/\1***/'
+grep -E "^(GEMINI_API_KEY|OPENAI_API_KEY)=" "$HOME/.local/share/mega-code/.env" \
+  | sed -E 's/(=.*).*/=***/'
 ```
 
-## Troubleshooting
-
-- **Timeout**: Session expires after 10 min. Re-run the command.
-- **Connection error**: Check `MEGA_CODE_SERVER_URL` in `~/.local/share/mega-code/.env`.
-- **Already logged in**: Running login again replaces the existing key.
+If neither key is configured, `/mega-code:wisdom-gen`, `/mega-code:wisdom-curate`,
+and `/mega-code:status` will stop and ask for local setup first.

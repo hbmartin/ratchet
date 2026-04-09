@@ -27,6 +27,9 @@ __all__ = [
     "TriggerPipelineResult",
     "UploadResult",
     "UserProfile",
+    "WisdomCurateResult",
+    "WisdomFeedbackResult",
+    "WisdomResultItem",
 ]
 
 from pathlib import Path
@@ -334,3 +337,18 @@ class MegaCodeBaseClient(Protocol):
         version: str,
         metadata: dict | None = None,
     ) -> EnhanceSkillResult: ...
+
+    def wisdom_curate(
+        self,
+        *,
+        query: str,
+        session_id: str = "",
+        top_k: int = 20,
+    ) -> WisdomCurateResult: ...
+
+    def wisdom_feedback(
+        self,
+        *,
+        session_id: str,
+        feedback_text: str,
+    ) -> WisdomFeedbackResult: ...
