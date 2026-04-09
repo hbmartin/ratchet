@@ -256,6 +256,14 @@ class OperatorPlanItem(BaseModel):
     source_artifact: str = Field(description="Source skill or artifact name")
     score: float = Field(description="Merged graph-aware relevance score")
     status: str = Field(description="Readiness status for execution assistance")
+    is_seed: bool = Field(default=False, description="Whether the operator was selected during seed retrieval")
+    wave: int = Field(default=0, description="Topological execution wave index")
+    parallelizable: bool = Field(default=False, description="Whether the operator can run in parallel with siblings")
+    inclusion_reason: str = Field(default="", description="Short rationale for including the operator")
+    context_package: list[str] = Field(
+        default_factory=list,
+        description="Minimal execution context package distilled for this operator",
+    )
     depends_on: list[str] = Field(default_factory=list, description="Operator IDs that must run first")
     requires_context: list[str] = Field(
         default_factory=list, description="Operator IDs that establish required context"

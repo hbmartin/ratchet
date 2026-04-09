@@ -333,8 +333,21 @@ def test_curate_expands_dependency_and_context_edges(tmp_path, monkeypatch):
     assert titles.index("Inspect auth context") < titles.index("Run auth regression tests")
     assert titles.index("Open auth module") < titles.index("Run auth regression tests")
     target = next(item for item in result.operator_plan if item.operator_id == target_operator_id)
+    context_item = next(item for item in result.operator_plan if item.operator_id == context_operator_id)
+    dependency_item = next(item for item in result.operator_plan if item.operator_id == dependency_operator_id)
     assert dependency_operator_id in target.depends_on
     assert context_operator_id in target.requires_context
+    assert target.wave == 1
+    assert context_item.wave == 0
+    assert dependency_item.wave == 0
+    assert target.parallelizable is False
+    assert "Dependency recovered" in dependency_item.inclusion_reason
+    assert "Context prerequisite recovered" in context_item.inclusion_reason
+    assert target.context_package[0].startswith("Do: ")
+    assert any(line.startswith("Done when: ") for line in target.context_package)
+    assert "Execution Waves:" in result.curation
+    assert "Wave 0: parallel" in result.curation
+    assert "Wave 1: serial" in result.curation
 
 
 def test_curate_suppresses_conflicts_and_superseded_ops(tmp_path, monkeypatch):
@@ -493,6 +506,50 @@ def test_feedback_increases_operator_rank(tmp_path, monkeypatch):
 
     assert feedback.status == "saved"
     assert second.operator_plan[0].score > first.operator_plan[0].score
+
+
+def test_curate_marks_seeds_and_parallel_waves(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    _prepare_project_root(tmp_path, monkeypatch)
+    store = LocalStore()
+
+    first_seed_id = str(uuid.uuid4())
+    second_seed_id = str(uuid.uuid4())
+    _persist_operators(
+        store=store,
+        tmp_path=tmp_path,
+        operators=[
+            _operator_payload(
+                artifact_id="placeholder",
+                artifact_name="parallel-skill",
+                operator_id=first_seed_id,
+                title="Inspect payment config",
+                procedure="Inspect the payment configuration before editing.",
+                context="python fastapi payments config",
+                outcome="payment configuration scope is understood",
+            ),
+            _operator_payload(
+                artifact_id="placeholder",
+                artifact_name="parallel-skill",
+                operator_id=second_seed_id,
+                title="Inspect billing jobs",
+                procedure="Inspect the billing jobs before editing.",
+                context="python fastapi billing jobs",
+                outcome="billing job scope is understood",
+            ),
+        ],
+    )
+
+    result = curate_local_wisdom(query="inspect payment billing config", top_k=2, store=store)
+
+    assert len(result.operator_plan) == 2
+    assert all(item.is_seed for item in result.operator_plan)
+    assert all(item.wave == 0 for item in result.operator_plan)
+    assert all(item.parallelizable for item in result.operator_plan)
+    assert all(item.inclusion_reason.startswith("Direct hybrid seed") for item in result.operator_plan)
+    assert "Seed Matches:" in result.curation
+    assert "Wave 0: parallel" in result.curation
 
 
 def test_curate_returns_empty_plan_without_operators(tmp_path, monkeypatch):

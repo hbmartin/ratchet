@@ -939,6 +939,234 @@ def _facet_candidate_scores(
     }
 
 
+def _ranked_ids(scores: dict[str, float], *, limit: int | None = None) -> list[str]:
+    ranked = sorted(scores, key=scores.get, reverse=True)
+    return ranked[:limit] if limit is not None else ranked
+
+
+def _rrf_fuse(rankings: list[list[str]], *, rank_constant: int = 60) -> dict[str, float]:
+    fused: defaultdict[str, float] = defaultdict(float)
+    for ranking in rankings:
+        for rank, operator_id in enumerate(ranking, 1):
+            fused[operator_id] += 1.0 / (rank_constant + rank)
+    if not fused:
+        return {}
+    max_score = max(fused.values()) or 1.0
+    return {operator_id: round(score / max_score, 6) for operator_id, score in fused.items()}
+
+
+def _structural_dependency_ids(operator: dict[str, Any], selected_ids: set[str] | None = None) -> list[str]:
+    ids: list[str] = []
+    for edge in operator.get("edges", []):
+        if edge.get("edge_type") not in {"depends_on", "requires_context"}:
+            continue
+        target_id = edge["target_operator_id"]
+        if selected_ids is not None and target_id not in selected_ids:
+            continue
+        ids.append(target_id)
+    return ids
+
+
+def _operator_contextual_text(operator: dict[str, Any], operator_map: dict[str, dict[str, Any]]) -> str:
+    depends_on = [
+        operator_map[target_id]["title"]
+        for target_id in _structural_dependency_ids(operator)
+        if target_id in operator_map
+    ]
+    requires_context = [
+        operator_map[edge["target_operator_id"]]["title"]
+        for edge in operator.get("edges", [])
+        if edge.get("edge_type") == "requires_context" and edge["target_operator_id"] in operator_map
+    ]
+    parts = [
+        operator.get("title", ""),
+        operator.get("source_artifact", ""),
+        operator.get("normalized_intent", ""),
+        operator["indexes"]["procedure"].get("lexical_text", ""),
+        operator["indexes"]["context"].get("lexical_text", ""),
+        operator["indexes"]["outcome"].get("lexical_text", ""),
+        operator["env_fingerprint"].get("lexical_text", ""),
+    ]
+    if depends_on:
+        parts.append("depends_on " + " ".join(depends_on))
+    if requires_context:
+        parts.append("requires_context " + " ".join(requires_context))
+    return " ".join(part for part in parts if part)
+
+
+def _contextual_candidate_scores(
+    *,
+    query_tokens: list[str],
+    operators: list[dict[str, Any]],
+    operator_map: dict[str, dict[str, Any]],
+) -> dict[str, float]:
+    docs = [_tokenize(_operator_contextual_text(item, operator_map)) for item in operators]
+    lexical_scores = normalize_scores(_bm25_scores(query_tokens, docs))
+    return {
+        item["operator_id"]: round(lexical_scores[idx], 6)
+        for idx, item in enumerate(operators)
+    }
+
+
+def _personalized_pagerank(
+    *,
+    seed_scores: dict[str, float],
+    operator_map: dict[str, dict[str, Any]],
+    allowed_ids: set[str],
+    alpha: float = 0.82,
+    max_iter: int = 40,
+    tol: float = 1e-6,
+) -> dict[str, float]:
+    if not allowed_ids:
+        return {}
+    ordered_ids = sorted(allowed_ids)
+    personalized = {operator_id: max(seed_scores.get(operator_id, 0.0), 0.0) for operator_id in allowed_ids}
+    total_personalized = sum(personalized.values())
+    if total_personalized <= 0:
+        uniform = 1.0 / len(allowed_ids)
+        personalized = {operator_id: uniform for operator_id in allowed_ids}
+    else:
+        personalized = {
+            operator_id: score / total_personalized
+            for operator_id, score in personalized.items()
+        }
+    scores = dict(personalized)
+    edge_weights = {"depends_on": 1.0, "requires_context": 0.85}
+    outgoing: dict[str, list[tuple[str, float]]] = {}
+    for operator_id in allowed_ids:
+        neighbors: list[tuple[str, float]] = []
+        for edge in operator_map[operator_id].get("edges", []):
+            if edge.get("edge_type") not in edge_weights:
+                continue
+            target_id = edge["target_operator_id"]
+            if target_id not in allowed_ids:
+                continue
+            neighbors.append((target_id, edge_weights[edge["edge_type"]]))
+        outgoing[operator_id] = neighbors
+    for _ in range(max_iter):
+        next_scores = {
+            operator_id: (1.0 - alpha) * personalized[operator_id]
+            for operator_id in allowed_ids
+        }
+        for operator_id, value in scores.items():
+            neighbors = outgoing[operator_id]
+            if not neighbors:
+                next_scores[operator_id] += alpha * value
+                continue
+            total_weight = sum(weight for _target_id, weight in neighbors) or 1.0
+            for target_id, weight in neighbors:
+                next_scores[target_id] += alpha * value * (weight / total_weight)
+        delta = sum(abs(next_scores[operator_id] - scores[operator_id]) for operator_id in allowed_ids)
+        scores = next_scores
+        if delta <= tol:
+            break
+    normalized = normalize_scores([scores[operator_id] for operator_id in ordered_ids])
+    return {operator_id: round(normalized[idx], 6) for idx, operator_id in enumerate(ordered_ids)}
+
+
+def _expand_dependency_closure(
+    seed_ids: list[str],
+    *,
+    operator_map: dict[str, dict[str, Any]],
+    allowed_ids: set[str],
+) -> set[str]:
+    selected_ids = {operator_id for operator_id in seed_ids if operator_id in allowed_ids}
+    stack = list(selected_ids)
+    while stack:
+        operator_id = stack.pop()
+        for target_id in _structural_dependency_ids(operator_map[operator_id]):
+            if target_id not in allowed_ids or target_id in selected_ids:
+                continue
+            selected_ids.add(target_id)
+            stack.append(target_id)
+    return selected_ids
+
+
+def _incoming_structural_support(
+    selected_ids: set[str],
+    operator_map: dict[str, dict[str, Any]],
+) -> dict[str, list[tuple[str, str]]]:
+    support: dict[str, list[tuple[str, str]]] = {operator_id: [] for operator_id in selected_ids}
+    for operator_id in selected_ids:
+        for edge in operator_map[operator_id].get("edges", []):
+            if edge.get("edge_type") not in {"depends_on", "requires_context"}:
+                continue
+            target_id = edge["target_operator_id"]
+            if target_id not in selected_ids:
+                continue
+            support[target_id].append((operator_id, edge["edge_type"]))
+    return support
+
+
+def _topological_waves(
+    *,
+    selected_ids: set[str],
+    operator_map: dict[str, dict[str, Any]],
+    score_lookup: dict[str, dict[str, float]],
+) -> list[list[str]]:
+    dependents: defaultdict[str, list[str]] = defaultdict(list)
+    indegree: dict[str, int] = {operator_id: 0 for operator_id in selected_ids}
+    for operator_id in selected_ids:
+        for target_id in _structural_dependency_ids(operator_map[operator_id], selected_ids):
+            indegree[operator_id] += 1
+            dependents[target_id].append(operator_id)
+    frontier = [
+        operator_id
+        for operator_id, degree in indegree.items()
+        if degree == 0
+    ]
+    frontier.sort(key=lambda operator_id: score_lookup.get(operator_id, {}).get("score", 0.0), reverse=True)
+    waves: list[list[str]] = []
+    visited: set[str] = set()
+    while frontier:
+        wave = list(frontier)
+        waves.append(wave)
+        frontier = []
+        for operator_id in wave:
+            visited.add(operator_id)
+            for dependent_id in dependents.get(operator_id, []):
+                indegree[dependent_id] -= 1
+                if indegree[dependent_id] == 0:
+                    frontier.append(dependent_id)
+        frontier.sort(key=lambda operator_id: score_lookup.get(operator_id, {}).get("score", 0.0), reverse=True)
+    remaining = [
+        operator_id
+        for operator_id in selected_ids
+        if operator_id not in visited
+    ]
+    if remaining:
+        remaining.sort(key=lambda operator_id: score_lookup.get(operator_id, {}).get("score", 0.0), reverse=True)
+        waves.append(remaining)
+    return waves
+
+
+def _minimal_context_package(operator: dict[str, Any]) -> list[str]:
+    return [
+        f"Do: {_first_sentence(operator['procedure'], operator['title'])}",
+        f"Context: {_snippet(operator['context'], 140)}",
+        f"Done when: {_snippet(operator['outcome'], 140)}",
+    ]
+
+
+def _inclusion_reason(
+    operator_id: str,
+    *,
+    seed_ids: set[str],
+    incoming_support: dict[str, list[tuple[str, str]]],
+    title_lookup: dict[str, str],
+) -> str:
+    if operator_id in seed_ids:
+        return "Direct hybrid seed from semantic, lexical, and contextual retrieval."
+    supporters = incoming_support.get(operator_id, [])
+    context_parents = [title_lookup[parent_id] for parent_id, edge_type in supporters if edge_type == "requires_context"]
+    dependency_parents = [title_lookup[parent_id] for parent_id, edge_type in supporters if edge_type == "depends_on"]
+    if context_parents:
+        return f"Context prerequisite recovered for {', '.join(context_parents[:2])}."
+    if dependency_parents:
+        return f"Dependency recovered for {', '.join(dependency_parents[:2])}."
+    return "Recovered by structural diffusion and reranking."
+
+
 def _env_match_score(current: dict[str, Any], candidate: dict[str, Any]) -> float:
     checks = 0.0
     score = 0.0
@@ -1068,32 +1296,7 @@ def curate_local_wisdom(
         )
         store.save_curation(result)
         return result
-    query_tokens = _tokenize(query)
-    procedure_scores = _facet_candidate_scores(
-        query_embedding=query_embedding,
-        query_tokens=query_tokens,
-        operators=operators,
-        facet_name="procedure",
-    )
-    context_scores = _facet_candidate_scores(
-        query_embedding=query_embedding,
-        query_tokens=query_tokens,
-        operators=operators,
-        facet_name="context",
-    )
-    outcome_scores = _facet_candidate_scores(
-        query_embedding=query_embedding,
-        query_tokens=query_tokens,
-        operators=operators,
-        facet_name="outcome",
-    )
-    facet_limit = max(top_k, 5)
-    candidate_ids: set[str] = set()
-    for facet_scores in (procedure_scores, context_scores, outcome_scores):
-        top_ids = sorted(facet_scores, key=facet_scores.get, reverse=True)[:facet_limit]
-        candidate_ids.update(top_ids)
     current_env = _current_runtime_fingerprint(query)
-    scored: list[dict[str, Any]] = []
     operator_map = {item["operator_id"]: item for item in operators}
     superseded_ids = {
         edge["target_operator_id"]
@@ -1101,48 +1304,118 @@ def curate_local_wisdom(
         for edge in item.get("edges", [])
         if edge.get("edge_type") == "supersedes"
     }
-    for operator_id in candidate_ids:
-        operator = operator_map[operator_id]
-        if operator_id in superseded_ids:
+    eligible_operators = [
+        item for item in operators if item["operator_id"] not in superseded_ids
+    ]
+    eligible_ids = {item["operator_id"] for item in eligible_operators}
+    query_tokens = _tokenize(query)
+    procedure_scores = _facet_candidate_scores(
+        query_embedding=query_embedding,
+        query_tokens=query_tokens,
+        operators=eligible_operators,
+        facet_name="procedure",
+    )
+    context_scores = _facet_candidate_scores(
+        query_embedding=query_embedding,
+        query_tokens=query_tokens,
+        operators=eligible_operators,
+        facet_name="context",
+    )
+    outcome_scores = _facet_candidate_scores(
+        query_embedding=query_embedding,
+        query_tokens=query_tokens,
+        operators=eligible_operators,
+        facet_name="outcome",
+    )
+    contextual_scores = _contextual_candidate_scores(
+        query_tokens=query_tokens,
+        operators=eligible_operators,
+        operator_map=operator_map,
+    )
+    seed_candidate_budget = min(max(top_k * 2, 5), len(eligible_operators))
+    seed_rankings = [
+        _ranked_ids(procedure_scores, limit=seed_candidate_budget),
+        _ranked_ids(context_scores, limit=seed_candidate_budget),
+        _ranked_ids(outcome_scores, limit=seed_candidate_budget),
+        _ranked_ids(contextual_scores, limit=seed_candidate_budget),
+    ]
+    seed_scores = _rrf_fuse(seed_rankings)
+    seed_count = min(max(top_k, 1), 6, len(seed_scores) or 1)
+    seed_ids = set(_ranked_ids(seed_scores, limit=seed_count))
+    structural_scores = _personalized_pagerank(
+        seed_scores=seed_scores,
+        operator_map=operator_map,
+        allowed_ids=eligible_ids,
+    )
+    diffusion_budget = min(max(top_k * 3, 6), len(eligible_operators))
+    structural_floor = max(0.08, max(structural_scores.values(), default=0.0) * 0.3)
+    frontier_ids: list[str] = []
+    for operator_id in _ranked_ids(structural_scores):
+        if operator_id in seed_ids:
             continue
+        if structural_scores.get(operator_id, 0.0) < structural_floor:
+            break
+        frontier_ids.append(operator_id)
+        if len(frontier_ids) >= diffusion_budget:
+            break
+    selected_ids = _expand_dependency_closure(
+        list(seed_ids) + frontier_ids,
+        operator_map=operator_map,
+        allowed_ids=eligible_ids,
+    )
+    selected = [operator_map[item_id] for item_id in selected_ids if item_id in operator_map]
+    incoming_support = _incoming_structural_support(selected_ids, operator_map)
+    support_counts = {
+        operator_id: len(incoming_support.get(operator_id, []))
+        for operator_id in selected_ids
+    }
+    ordered_selected_ids = sorted(selected_ids)
+    normalized_support = normalize_scores([support_counts[operator_id] for operator_id in ordered_selected_ids])
+    support_scores = {
+        operator_id: normalized_support[idx]
+        for idx, operator_id in enumerate(ordered_selected_ids)
+    }
+    scored: list[dict[str, Any]] = []
+    score_lookup: dict[str, dict[str, float]] = {}
+    for operator in selected:
+        operator_id = operator["operator_id"]
         candidate_fingerprint = json.loads(operator["env_fingerprint"].get("fingerprint_json", "{}"))
         env_match_score = _env_match_score(current_env, candidate_fingerprint)
-        feedback_boost = float(operator["feedback_score"]) * 0.15
-        recency_boost = max(0.0, 0.1 - min(_days_since(operator["created_at"]) / 365.0, 0.1))
-        provenance_boost = 0.05 if operator.get("source_path") else 0.0
-        retrieval_score = (
-            0.45 * procedure_scores.get(operator_id, 0.0)
-            + 0.25 * context_scores.get(operator_id, 0.0)
-            + 0.30 * outcome_scores.get(operator_id, 0.0)
+        feedback_boost = float(operator["feedback_score"]) * 0.12
+        recency_boost = max(0.0, 0.08 - min(_days_since(operator["created_at"]) / 365.0, 0.08))
+        provenance_boost = 0.04 if operator.get("source_path") else 0.0
+        dependency_penalty = 0.02 * max(len(_structural_dependency_ids(operator, selected_ids)) - 1, 0)
+        rerank_score = (
+            0.34 * seed_scores.get(operator_id, 0.0)
+            + 0.24 * structural_scores.get(operator_id, 0.0)
+            + 0.14 * max(
+                procedure_scores.get(operator_id, 0.0),
+                context_scores.get(operator_id, 0.0),
+                outcome_scores.get(operator_id, 0.0),
+            )
+            + 0.08 * contextual_scores.get(operator_id, 0.0)
+            + 0.14 * env_match_score
+            + 0.06 * support_scores.get(operator_id, 0.0)
+            + feedback_boost
+            + recency_boost
+            + provenance_boost
+            - dependency_penalty
         )
-        final_score = retrieval_score * (0.35 + 0.65 * env_match_score) + feedback_boost + recency_boost + provenance_boost
-        scored.append(
-            {
-                **operator,
-                "env_match_score": round(env_match_score, 6),
-                "score": round(final_score, 6),
-            }
-        )
+        entry = {
+            **operator,
+            "seed_score": round(seed_scores.get(operator_id, 0.0), 6),
+            "structural_score": round(structural_scores.get(operator_id, 0.0), 6),
+            "env_match_score": round(env_match_score, 6),
+            "score": round(rerank_score, 6),
+        }
+        scored.append(entry)
+        score_lookup[operator_id] = {
+            "score": float(entry["score"]),
+            "env_match_score": float(entry["env_match_score"]),
+            "seed_score": float(entry["seed_score"]),
+            "structural_score": float(entry["structural_score"]),
+        }
     scored.sort(key=lambda item: item["score"], reverse=True)
-    seeds = scored[:top_k]
-    seed_ids = {item["operator_id"] for item in seeds}
-    selected_ids = set(seed_ids)
-
-    def expand_neighbors(operator_id: str) -> None:
-        operator = operator_map[operator_id]
-        for edge in operator.get("edges", []):
-            if edge.get("edge_type") not in {"depends_on", "requires_context"}:
-                continue
-            target_id = edge["target_operator_id"]
-            if target_id in superseded_ids or target_id in selected_ids or target_id not in operator_map:
-                continue
-            selected_ids.add(target_id)
-            expand_neighbors(target_id)
-
-    for item in list(seed_ids):
-        expand_neighbors(item)
-    selected = [operator_map[item_id] for item_id in selected_ids if item_id in operator_map and item_id not in superseded_ids]
-    score_lookup = {item["operator_id"]: item for item in scored}
     kept_ids: list[str] = []
     dropped_by_conflict: set[str] = set()
     for item in sorted(
@@ -1157,44 +1430,50 @@ def curate_local_wisdom(
         dropped_by_conflict.update(_operator_conflict_ids(item))
         dropped_by_conflict.discard(operator_id)
     selected_map = {item_id: operator_map[item_id] for item_id in kept_ids}
-    ordered: list[dict[str, Any]] = []
-    visited: set[str] = set()
-
-    def visit(operator_id: str) -> None:
-        if operator_id in visited or operator_id not in selected_map:
-            return
-        visited.add(operator_id)
-        operator = selected_map[operator_id]
-        for edge in operator.get("edges", []):
-            if edge.get("edge_type") in {"depends_on", "requires_context"}:
-                visit(edge["target_operator_id"])
-        ordered.append(
-            {
-                **operator,
-                "score": score_lookup.get(operator_id, {"score": 0.0})["score"],
-                "env_match_score": score_lookup.get(operator_id, {"env_match_score": 0.0})["env_match_score"],
-            }
-        )
-
-    for item in sorted(
-        kept_ids,
-        key=lambda operator_id: score_lookup.get(operator_id, {"score": 0.0})["score"],
-        reverse=True,
-    ):
-        visit(item)
+    selected_kept_ids = set(selected_map)
+    title_lookup = {operator_id: selected_map[operator_id]["title"] for operator_id in selected_map}
+    incoming_support = _incoming_structural_support(selected_kept_ids, operator_map)
+    waves = _topological_waves(
+        selected_ids=selected_kept_ids,
+        operator_map=operator_map,
+        score_lookup=score_lookup,
+    )
+    wave_lookup = {
+        operator_id: wave_index
+        for wave_index, wave in enumerate(waves)
+        for operator_id in wave
+    }
+    parallel_lookup = {
+        operator_id: len(wave) > 1
+        for wave in waves
+        for operator_id in wave
+    }
+    ordered: list[dict[str, Any]] = [
+        {
+            **selected_map[operator_id],
+            "score": score_lookup.get(operator_id, {"score": 0.0})["score"],
+            "env_match_score": score_lookup.get(operator_id, {"env_match_score": 0.0})["env_match_score"],
+            "seed_score": score_lookup.get(operator_id, {"seed_score": 0.0})["seed_score"],
+            "structural_score": score_lookup.get(operator_id, {"structural_score": 0.0})["structural_score"],
+            "wave": wave_lookup.get(operator_id, 0),
+            "parallelizable": parallel_lookup.get(operator_id, False),
+            "is_seed": operator_id in seed_ids,
+        }
+        for wave in waves
+        for operator_id in wave
+    ]
     plan_items: list[OperatorPlanItem] = []
-    title_lookup = {item["operator_id"]: item["title"] for item in ordered}
     status_lookup: dict[str, str] = {}
     for item in ordered:
         depends_on = [
             edge["target_operator_id"]
             for edge in item.get("edges", [])
-            if edge.get("edge_type") == "depends_on" and edge["target_operator_id"] in selected_map
+            if edge.get("edge_type") == "depends_on" and edge["target_operator_id"] in selected_kept_ids
         ]
         requires_context = [
             edge["target_operator_id"]
             for edge in item.get("edges", [])
-            if edge.get("edge_type") == "requires_context" and edge["target_operator_id"] in selected_map
+            if edge.get("edge_type") == "requires_context" and edge["target_operator_id"] in selected_kept_ids
         ]
         missing_preconditions = _evaluate_preconditions(item, current_env)
         missing_slots = _evaluate_slots(item)
@@ -1213,9 +1492,19 @@ def curate_local_wisdom(
                 source_artifact=item["source_artifact"],
                 score=float(item["score"]),
                 status=status,
+                is_seed=bool(item.get("is_seed")),
+                wave=int(item.get("wave", 0)),
+                parallelizable=bool(item.get("parallelizable", False)),
+                inclusion_reason=_inclusion_reason(
+                    item["operator_id"],
+                    seed_ids=seed_ids,
+                    incoming_support=incoming_support,
+                    title_lookup=title_lookup,
+                ),
+                context_package=_minimal_context_package(item),
                 depends_on=depends_on,
                 requires_context=requires_context,
-                conflicts_with=sorted(_operator_conflict_ids(item).intersection(selected_map)),
+                conflicts_with=sorted(_operator_conflict_ids(item).intersection(selected_kept_ids)),
                 missing_preconditions=missing_preconditions,
                 missing_slots=missing_slots,
                 env_match_score=float(item["env_match_score"]),
@@ -1243,28 +1532,43 @@ def curate_local_wisdom(
         f"Problem: {query}",
         "",
         f"Workflow: {title}",
-        "Overview: Local graph-aware retrieval over operator procedure, context, and outcome indexes.",
+        "Overview: Hybrid seed retrieval, structural expansion, reranking, topological wave planning, and compact context packaging.",
         f"Readiness: {readiness_summary.get('ready', 0)} ready, {readiness_summary.get('blocked', 0)} blocked.",
+        f"Seeds: {len(seed_ids)} direct matches. Bundle: {len(plan_items)} operators after structural expansion.",
         "",
-        "Operator Plan:",
+        "Seed Matches:",
     ]
-    for idx, item in enumerate(plan_items, 1):
-        source = title_lookup.get(item.operator_id, item.title)
-        operator = selected_map[item.operator_id]
-        lines.append(f"{idx}. {source} — Skill: {item.source_artifact} [{item.status}]")
-        lines.append(f"   Context: {operator['context']}")
-        lines.append(f"   Outcome: {operator['outcome']}")
-        if item.depends_on:
-            lines.append(f"   Depends On: {', '.join(title_lookup[dep] for dep in item.depends_on)}")
-        if item.requires_context:
-            lines.append(f"   Requires Context: {', '.join(title_lookup[dep] for dep in item.requires_context)}")
-        if item.missing_preconditions:
-            lines.append(f"   Missing Preconditions: {'; '.join(item.missing_preconditions)}")
-        if item.missing_slots:
-            lines.append(f"   Missing Slots: {', '.join(item.missing_slots)}")
-        if item.conflicts_with:
-            lines.append(f"   Conflicts: {', '.join(title_lookup.get(dep, dep) for dep in item.conflicts_with)}")
-        lines.append(f"   Score: {item.score:.3f} | Env Match: {item.env_match_score:.3f}")
+    seed_plan_items = [item for item in plan_items if item.is_seed]
+    if seed_plan_items:
+        for item in seed_plan_items:
+            lines.append(f"- {item.title} ({item.score:.3f})")
+    else:
+        lines.append("- No direct seeds exceeded the retrieval threshold; using the best structural bundle.")
+    lines.extend(
+        [
+            "",
+            "Execution Waves:",
+        ]
+    )
+    for wave_index, wave in enumerate(waves):
+        lines.append(f"Wave {wave_index}: {'parallel' if len(wave) > 1 else 'serial'}")
+        wave_items = [item for item in plan_items if item.wave == wave_index]
+        for idx, item in enumerate(wave_items, 1):
+            lines.append(f"{idx}. {item.title} — Skill: {item.source_artifact} [{item.status}]")
+            lines.append(f"   Why: {item.inclusion_reason}")
+            for package_line in item.context_package:
+                lines.append(f"   {package_line}")
+            if item.depends_on:
+                lines.append(f"   Depends On: {', '.join(title_lookup[dep] for dep in item.depends_on)}")
+            if item.requires_context:
+                lines.append(f"   Requires Context: {', '.join(title_lookup[dep] for dep in item.requires_context)}")
+            if item.missing_preconditions:
+                lines.append(f"   Missing Preconditions: {'; '.join(item.missing_preconditions)}")
+            if item.missing_slots:
+                lines.append(f"   Missing Slots: {', '.join(item.missing_slots)}")
+            if item.conflicts_with:
+                lines.append(f"   Conflicts: {', '.join(title_lookup.get(dep, dep) for dep in item.conflicts_with)}")
+            lines.append(f"   Score: {item.score:.3f} | Env Match: {item.env_match_score:.3f}")
     curation = "\n".join(lines) + "\n"
     result = WisdomCurateResult(
         session_id=session_id or str(uuid.uuid4()),
