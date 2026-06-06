@@ -1,4 +1,4 @@
-"""MEGA-Code collector data source (~/.local/share/mega-code/).
+"""MEGA-Code collector data source (~/.local/ratchetai/).
 
 Loads historical conversation data collected by MEGA-Code's session collector.
 """
@@ -47,7 +47,7 @@ class MegaCodeSource:
 
         Args:
             base_path: Base directory for MEGA-Code data.
-                      Defaults to ~/.local/share/mega-code/
+                      Defaults to ~/.local/ratchetai/
         """
         if base_path is None:
             from mega_code.client.dirs import data_dir

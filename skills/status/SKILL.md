@@ -11,7 +11,7 @@ Show current MEGA-Code status and pending items.
 ## Setup
 
 ```bash
-MEGA_DIR="${CLAUDE_PLUGIN_ROOT:-$(cat ~/.local/share/mega-code/plugin-root 2>/dev/null)}"
+MEGA_DIR="${CLAUDE_PLUGIN_ROOT:-$(cat ~/.local/ratchetai/plugin-root 2>/dev/null)}"
 set -a && . "$MEGA_DIR/.env" 2>/dev/null && set +a
 uv run --directory "$MEGA_DIR" python -m mega_code.client.check_auth
 ```
@@ -27,7 +27,8 @@ uv run --directory "$MEGA_DIR" mega-code pipeline-status 2>/dev/null || true
 ## Quick Status
 
 ```bash
-ls -la ~/.local/share/mega-code/data/pending-skills/ ~/.local/share/mega-code/data/pending-strategies/ 2>/dev/null || echo "No pending items"
+DATA_DIR="$(uv run --directory "$MEGA_DIR" python -c "from mega_code.client.dirs import data_dir; print(data_dir())")"
+ls -la "$DATA_DIR/data/pending-skills/" "$DATA_DIR/data/pending-strategies/" 2>/dev/null || echo "No pending items"
 ```
 
 ## Detailed Pending Items
@@ -35,8 +36,9 @@ ls -la ~/.local/share/mega-code/data/pending-skills/ ~/.local/share/mega-code/da
 Uses `ls` checks to avoid zsh glob errors on empty directories.
 
 ```bash
-SKILLS_DIR="$HOME/.local/share/mega-code/data/pending-skills"
-STRATS_DIR="$HOME/.local/share/mega-code/data/pending-strategies"
+DATA_DIR="$(uv run --directory "$MEGA_DIR" python -c "from mega_code.client.dirs import data_dir; print(data_dir())")"
+SKILLS_DIR="$DATA_DIR/data/pending-skills"
+STRATS_DIR="$DATA_DIR/data/pending-strategies"
 
 echo "=== Pending Skills ==="
 if [ -d "$SKILLS_DIR" ] && [ "$(ls -A "$SKILLS_DIR" 2>/dev/null)" ]; then
@@ -65,5 +67,5 @@ fi
 
 | Type | Pending Location | Installed Location |
 |------|------------------|-------------------|
-| Skills | `~/.local/share/mega-code/data/pending-skills/{name}/` | `{data_dir}/skills/{name}/SKILL.md` |
-| Strategies | `~/.local/share/mega-code/data/pending-strategies/{name}.md` | `.claude/rules/mega-code/{name}.md` |
+| Skills | `~/.local/ratchetai/data/pending-skills/{name}/` | `{data_dir}/skills/{name}/SKILL.md` |
+| Strategies | `~/.local/ratchetai/data/pending-strategies/{name}.md` | `.claude/rules/mega-code/{name}.md` |

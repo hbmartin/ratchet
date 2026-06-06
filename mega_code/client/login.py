@@ -12,10 +12,6 @@ endpoints. Supports two modes:
 
     # Step 2: Poll until complete, save API key (run in background)
     python -m mega_code.client.login --step poll --client-id <ID> --url <URL>
-
-Environment variables:
-  MEGA_CODE_SERVER_URL -- server base URL (default: https://console.megacode.ai)
-                         The mega-service API path is derived automatically.
 """
 
 from __future__ import annotations
@@ -254,7 +250,6 @@ def run_poll(client_id: str, base_url: str) -> int:
     print("Login successful!")
     print(f"API key saved to: {env_path}")
     print("Client mode: remote")
-    print(f"Server URL: {env_vars['MEGA_CODE_SERVER_URL']}")
 
     return 0
 
@@ -326,7 +321,6 @@ def run_login(
     print("Login successful!")
     print(f"API key saved to: {env_path}")
     print("Client mode: remote")
-    print(f"Server URL: {env_vars['MEGA_CODE_SERVER_URL']}")
 
     return 0
 

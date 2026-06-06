@@ -21,6 +21,7 @@ Usage:
     python -m mega_code.client.run_pipeline --project @mega-code
     python -m mega_code.client.run_pipeline --model gemini-2.5-flash
     python -m mega_code.client.run_pipeline --project --include-claude
+    python -m mega_code.client.run_pipeline --project --include-codex
     python -m mega_code.client.run_pipeline --poll-existing <run_id> --project <project_id>
 """
 
@@ -33,6 +34,7 @@ import logging
 import os
 import re
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 from mega_code.client.cli import get_env_path, load_env_file
@@ -63,6 +65,38 @@ def _load_env() -> None:
             os.environ.setdefault(key, value)
 
 
+def _running_in_codex(env: Mapping[str, str] | None = None) -> bool:
+    """Return True when the command is running inside a Codex shell/session."""
+    source_env = env or os.environ
+    return any(
+        source_env.get(key)
+        for key in (
+            "CODEX_SHELL",
+            "CODEX_THREAD_ID",
+            "CODEX_HOME",
+            "CODEX_INTERNAL_ORIGINATOR_OVERRIDE",
+        )
+    )
+
+
+def _resolve_include_flags(
+    args: argparse.Namespace,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> tuple[bool, bool]:
+    """Resolve effective source include flags for the current invocation."""
+    include_claude = args.include_claude or args.include_all
+    include_codex = args.include_codex or args.include_all
+
+    explicit_source_selection = args.include_claude or args.include_codex or args.include_all
+    project_mode = args.project is not None
+
+    if project_mode and not explicit_source_selection and _running_in_codex(env):
+        include_codex = True
+
+    return include_claude, include_codex
+
+
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
@@ -84,7 +118,8 @@ Project argument formats:
         metavar="PROJECT",
         help=(
             "Run on project sessions. Without value: current project. "
-            "With value: @name, folder_name, or /path/to/project"
+            "With value: @name, folder_name, or /path/to/project. "
+            "In Codex, project mode also includes related Codex sessions by default."
         ),
     )
     parser.add_argument(
@@ -209,7 +244,6 @@ async def main():
 
     from mega_code.client.api import create_client, resolve_mode
     from mega_code.client.pending import (
-        PendingResult,
         format_error_notification,
         format_pipeline_notification,
         poll_pipeline_status,
@@ -227,8 +261,9 @@ async def main():
         logger.info("Model not specified — local runtime will choose based on configured provider keys")
 
     # Resolve include flags
-    include_claude = args.include_claude or args.include_all
-    include_codex = args.include_codex or args.include_all
+    include_claude, include_codex = _resolve_include_flags(args)
+    if args.project is not None and include_codex and not (args.include_codex or args.include_all):
+        logger.info("Project mode in Codex shell: including related Codex sessions by default")
 
     # Get environment variables
     session_id = args.session_id or os.environ.get("CLAUDE_SESSION_ID")
@@ -348,11 +383,16 @@ async def main():
             if status.status == "failed":
                 error_msg = status.error or "Unknown error"
                 logger.error(f"Pipeline failed: {error_msg}")
-                result = PendingResult(
-                    run_id=run_id,
-                    project_id=project_id,
-                    errors=[error_msg],
-                )
+                failed_info = {
+                    "additionalContext": format_error_notification(error_msg).strip(),
+                    "failed": {
+                        "run_id": run_id,
+                        "project_id": project_id,
+                        "error": error_msg,
+                    },
+                }
+                print(json.dumps(failed_info))
+                sys.exit(1)
             else:
                 # Save outputs to pending folders
                 result = save_outputs_to_pending(status, project_id=project_id, run_id=run_id)

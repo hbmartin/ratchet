@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from collections.abc import Iterable
 
 import httpx
@@ -56,12 +57,98 @@ class FakeLocalLLM(BaseLocalLLM):
             vec = [0.0] * _EMBED_DIMENSION
             for token in text.lower().split():
                 digest = hashlib.sha256(token.encode("utf-8")).digest()
-                for i in range(0, min(len(digest), _EMBED_DIMENSION)):
-                    vec[i] += digest[i] / 255.0
+                for i in range(0, len(digest), 2):
+                    idx = digest[i] % _EMBED_DIMENSION
+                    sign = 1.0 if digest[(i + 1) % len(digest)] % 2 == 0 else -1.0
+                    weight = (digest[(i + 2) % len(digest)] / 255.0) + 0.1
+                    vec[idx] += sign * weight
             vectors.append(_normalize(vec))
         return vectors
 
+    def _structured_payload(self, prompt: str, marker: str) -> dict | None:
+        prefix = f"MEGA_CODE_JSON_PASS::{marker}"
+        if not prompt.startswith(prefix):
+            return None
+        match = re.search(r"PAYLOAD_JSON_START\n(.*)\nPAYLOAD_JSON_END", prompt, re.DOTALL)
+        if not match:
+            return None
+        return json.loads(match.group(1))
+
     def generate_text(self, prompt: str, *, model: str | None = None) -> str:
+        if payload := self._structured_payload(prompt, "SUCCESS_ANALYST"):
+            return json.dumps({"proposals": payload.get("candidates", [])})
+        if payload := self._structured_payload(prompt, "ERROR_ANALYST"):
+            return json.dumps({"proposals": payload.get("candidates", [])})
+        if payload := self._structured_payload(prompt, "CONSOLIDATOR"):
+            grouped_proposals = payload.get("grouped_proposals", [])
+            workflow = []
+            verification_loop: list[str] = []
+            failure_guards: list[str] = []
+            strategy = {
+                "delta_rules": [],
+                "correction_patterns": [],
+                "when_to_retry": [],
+                "when_to_stop": [],
+                "support_signals": [],
+            }
+            memory_fragments = []
+            for proposal in grouped_proposals:
+                item = {
+                    "title": proposal["title"],
+                    "rule": proposal["rule"],
+                    "evidence_session_ids": proposal.get("evidence_session_ids", []),
+                    "support_count": proposal.get("support_count", 1),
+                    "examples": proposal.get("examples", []),
+                }
+                target = proposal.get("target", "")
+                if target == "canonical_workflow":
+                    workflow.append(item)
+                elif target == "verification_loop":
+                    verification_loop.append(proposal["rule"])
+                elif target == "failure_guards":
+                    failure_guards.append(proposal["rule"])
+                elif target == "correction_patterns":
+                    strategy["correction_patterns"].append(proposal["rule"])
+                    strategy["delta_rules"].append(proposal["rule"])
+                elif target == "when_to_retry":
+                    strategy["when_to_retry"].append(proposal["rule"])
+                    strategy["delta_rules"].append(proposal["rule"])
+                elif target == "when_to_stop":
+                    strategy["when_to_stop"].append(proposal["rule"])
+                elif target == "support_signals":
+                    strategy["support_signals"].append(proposal["rule"])
+                else:
+                    strategy["delta_rules"].append(proposal["rule"])
+                memory_fragments.append(
+                    {
+                        "name": proposal["title"],
+                        "procedure": proposal["rule"],
+                        "context": proposal.get("applicability", ""),
+                        "resultant": "Advance the clustered workflow reliably."
+                        if target in {"canonical_workflow", "verification_loop"}
+                        else "Avoid repeating the same failure pattern.",
+                        "constraints": "Ground the action in repeated session evidence.",
+                        "evidence_session_ids": proposal.get("evidence_session_ids", []),
+                        "support_count": proposal.get("support_count", 1),
+                        "kind": "success" if target in {"canonical_workflow", "verification_loop"} else "error",
+                    }
+                )
+            if not strategy["support_signals"]:
+                strategy["support_signals"] = verification_loop[:2] or [
+                    "Use the project verification command as the readiness signal."
+                ]
+            return json.dumps(
+                {
+                    "summary": f"Cluster {payload.get('cluster_id', 'cluster')} consolidates {len(payload.get('member_session_ids', []))} related sessions into one reusable workflow.",
+                    "applicability": payload.get("applicability_hints", []),
+                    "canonical_workflow": workflow[:6],
+                    "verification_loop": verification_loop[:4],
+                    "failure_guards": failure_guards[:4],
+                    "strategy": strategy,
+                    "memory_fragments": memory_fragments[:8],
+                    "keywords": payload.get("keywords", []),
+                }
+            )
         return json.dumps(
             {
                 "summary": "deterministic local summary",

@@ -101,6 +101,10 @@ class PendingSkillInfo:
     path: str
     domains: list[str] = field(default_factory=list)
     validation_passed: bool = True
+    validation_level: str = "observed"
+    trust_tier: str = "provisional"
+    safety_gate_status: str = "review_required"
+    safety_gate_reason: str = ""
     author: str = ""
     version: str = ""
     tags: list[str] = field(default_factory=list)
@@ -212,6 +216,10 @@ def save_outputs_to_pending(
 
     # Save pending skills
     for skill_data in status.outputs.pending_skills or []:
+        try:
+            skill_metadata = json.loads(skill_data.metadata) if skill_data.metadata else {}
+        except json.JSONDecodeError:
+            skill_metadata = {}
         skill_md_content = normalize_pending_skill_markdown(
             skill_md=skill_data.skill_md,
             skill_name=_sanitize_name(skill_data.skill_name),
@@ -237,6 +245,12 @@ def save_outputs_to_pending(
                 name=skill_name,
                 description=extract_skill_description(skill_md_content),
                 path=str(skill_dir),
+                validation_passed=(skill_data.safety_gate_status or skill_metadata.get("safety_gate_status")) == "approved",
+                validation_level=skill_data.validation_level or skill_metadata.get("validation_level", "observed"),
+                trust_tier=skill_data.trust_tier or skill_metadata.get("trust_tier", "provisional"),
+                safety_gate_status=skill_data.safety_gate_status
+                or skill_metadata.get("safety_gate_status", "review_required"),
+                safety_gate_reason=skill_data.safety_gate_reason or skill_metadata.get("safety_gate_reason", ""),
             )
         )
 
@@ -348,6 +362,10 @@ def get_pending_skills() -> list[PendingSkillInfo]:
                 path=str(skill_dir),
                 domains=metadata.get("workflow", {}).get("domains", []),
                 validation_passed=metadata.get("validation_passed", True),
+                validation_level=metadata.get("validation_level", "observed"),
+                trust_tier=metadata.get("trust_tier", "provisional"),
+                safety_gate_status=metadata.get("safety_gate_status", "review_required"),
+                safety_gate_reason=metadata.get("safety_gate_reason", ""),
                 author=str(fm.get("author", "")),
                 version=str(fm.get("version", "")),
                 tags=fm_tags if isinstance(fm_tags, list) else [],
@@ -665,7 +683,26 @@ def _get_skill_path(s) -> str:
 
 def _get_skill_validation_passed(s) -> bool:
     """Get validation status from dataclass or Pydantic model."""
-    return getattr(s, "validation_passed", True)
+    explicit = getattr(s, "validation_passed", None)
+    if explicit is not None:
+        return bool(explicit)
+    return getattr(s, "safety_gate_status", "approved") == "approved"
+
+
+def _get_skill_validation_level(s) -> str:
+    return getattr(s, "validation_level", "") or ""
+
+
+def _get_skill_trust_tier(s) -> str:
+    return getattr(s, "trust_tier", "") or ""
+
+
+def _get_skill_safety_gate_status(s) -> str:
+    return getattr(s, "safety_gate_status", "") or ""
+
+
+def _get_skill_safety_gate_reason(s) -> str:
+    return getattr(s, "safety_gate_reason", "") or ""
 
 
 def _get_strategy_name(s) -> str:
@@ -704,6 +741,17 @@ def _format_skills_section(skills: list) -> str:
         desc = _get_skill_description(s)
         if desc:
             lines.append(f"       {desc}")
+        validation_level = _get_skill_validation_level(s)
+        trust_tier = _get_skill_trust_tier(s)
+        safety_gate = _get_skill_safety_gate_status(s)
+        if validation_level or trust_tier or safety_gate:
+            lines.append(
+                "       Governance: "
+                f"{validation_level or 'unknown'} | {trust_tier or 'unknown'} | {safety_gate or 'unknown'}"
+            )
+        safety_gate_reason = _get_skill_safety_gate_reason(s)
+        if safety_gate_reason:
+            lines.append(f"       Gate: {safety_gate_reason}")
         path = _get_skill_path(s)
         if path:
             lines.append(f"       \U0001f4c1 `{path}`")
@@ -774,6 +822,9 @@ def format_pipeline_notification(result: PendingResult) -> str:
     Delegates to format_review_notification() for the review workflow,
     with a pipeline-specific header and preamble.
     """
+    if result.errors and not result.has_outputs():
+        return format_error_notification("\n".join(result.errors))
+
     if not result.has_outputs():
         return get_no_outputs_notification()
 

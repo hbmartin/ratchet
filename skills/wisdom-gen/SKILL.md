@@ -1,13 +1,13 @@
 ---
-description: Run the MEGA-Code skill extraction pipeline to analyze Claude Code sessions and generate reusable skills and strategies.
-argument-hint: "[--project [@<name>]] [--model <model>] [--poll-timeout <seconds>] [--include-claude]"
+description: Run the MEGA-Code skill extraction pipeline to analyze project sessions and generate reusable skills and strategies.
+argument-hint: "[--project [@<name>]] [--model <model>] [--poll-timeout <seconds>] [--include-claude] [--include-codex] [--include-all]"
 allowed-tools: Bash, Read, Write, Edit, AskUserQuestion
 disable-model-invocation: true
 ---
 
 # Run Local Skill Extraction Pipeline
 
-Extract reusable skills and coding strategies from your Claude Code sessions.
+Extract reusable skills and coding strategies from your project sessions.
 
 ## ⚠️ Important: Pipeline Is Asynchronous
 
@@ -21,7 +21,7 @@ The default poll timeout is **20 minutes**. For longer runs, use `--poll-timeout
 ## Setup
 
 ```bash
-MEGA_DIR="${CLAUDE_PLUGIN_ROOT:-$(cat ~/.local/share/mega-code/plugin-root 2>/dev/null)}"
+MEGA_DIR="${CLAUDE_PLUGIN_ROOT:-$(cat ~/.local/ratchetai/plugin-root 2>/dev/null)}"
 set -a && . "$MEGA_DIR/.env" 2>/dev/null && set +a
 uv run --directory "$MEGA_DIR" python -m mega_code.client.check_auth
 ```
@@ -41,9 +41,13 @@ All commands below assume `MEGA_DIR` is set.
 | `--model <alias>` | Optional local provider model override |
 | `--poll-timeout <seconds>` | Max seconds to poll for completion (default: 1200 = 20 min; 0 = indefinite) |
 | `--include-claude` | Include related Claude Code sessions from the project |
+| `--include-codex` | Include related Codex CLI sessions from the project |
+| `--include-all` | Include all related session sources |
 
 **Project argument formats** (all equivalent):
 `@mega-code` · `mega-code` · `mega-code_b39e0992` · `/path/to/project`
+
+When this command runs inside Codex, `--project` includes related Codex sessions by default unless you explicitly choose sources with `--include-*`.
 
 ## Running the Pipeline
 
@@ -72,7 +76,7 @@ otherwise OpenAI when `OPENAI_API_KEY` is set.
 ## Pipeline Outputs
 
 1. **Skills & Strategies** — saved to pending dirs for review/install
-2. **Lesson Learned documents** — saved to `~/.local/share/mega-code/data/feedback/{project_id}/{run_id}/lessons/` (from sessions tagged `lesson_learn`)
+2. **Lesson Learned documents** — saved to `~/.local/ratchetai/data/feedback/{project_id}/{run_id}/lessons/` (from sessions tagged `lesson_learn`)
 
 ## Handling Active Pipeline (Exit Code 2)
 

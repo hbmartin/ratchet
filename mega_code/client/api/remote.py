@@ -21,6 +21,7 @@ from tenacity import (
 
 from mega_code.client.api.protocol import (
     ActivePipelinesResult,
+    CausalStepFeedbackItem,
     EnhanceSkillResult,
     OutputsResult,
     PipelineStatusResult,
@@ -285,7 +286,7 @@ class MegaCodeRemote:
 
         Order of operations:
           1. PUT /api/megacode/v1/profile  → persists to mega-service Postgres
-          2. Write ~/.local/share/mega-code/profile.json  → local mirror for inspection
+          2. Write ~/.local/ratchetai/profile.json  → local mirror for inspection
              (only written when the API call succeeds)
         """
         payload = profile.model_dump(by_alias=True)
@@ -393,10 +394,19 @@ class MegaCodeRemote:
         *,
         session_id: str,
         feedback_text: str,
+        failure_stage: str = "unknown",
+        should_abstain: bool | None = None,
+        step_feedback: list[CausalStepFeedbackItem] | None = None,
     ) -> WisdomFeedbackResult:
         """Submit wisdom feedback via POST /api/megacode/v1/wisdom/feedback."""
         self._set_current_span_attrs(session_id=session_id)
-        body = {"session_id": session_id, "feedback_text": feedback_text}
+        body = {
+            "session_id": session_id,
+            "feedback_text": feedback_text,
+            "failure_stage": failure_stage,
+            "should_abstain": should_abstain,
+            "step_feedback": [item.model_dump() for item in (step_feedback or [])],
+        }
         resp = self._client.post("/api/megacode/v1/wisdom/feedback", json=body)
         self._check_response(resp)
         return WisdomFeedbackResult(**resp.json())

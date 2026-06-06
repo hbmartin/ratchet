@@ -5,7 +5,7 @@ have been uploaded. Before triggering a remote pipeline run, the caller invokes
 sync_trajectories() to ensure all local sessions are on the server.
 
 Ledger location:
-    ~/.local/share/mega-code/projects/{project_id}/sync-ledger.json
+    ~/.local/ratchetai/projects/{project_id}/sync-ledger.json
 """
 
 from __future__ import annotations

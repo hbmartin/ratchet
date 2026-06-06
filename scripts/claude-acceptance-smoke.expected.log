@@ -1,0 +1,25 @@
+MEGA-Code Claude acceptance smoke test
+Repo root: <repo-root>
+Claude auth mode: detected and usable
+MEGA local model mode: fake via MEGA_CODE_TEST_FAKE_LLM=1
+Fixture project: auth refresh sample
+Status smoke:
+PASS - slash command /mega-code:status loaded from --plugin-dir
+PASS - SessionStart hook event observed
+PASS - UserPromptSubmit hook event observed
+PASS - Stop hook event observed
+PASS - session files written under <data-dir>/projects/
+Prompt sessions:
+PASS - prompt session 1 returned Covered/Missing bullets
+PASS - prompt session 2 returned a Next improvement sentence
+PASS - at least 3 session directories captured
+Pipeline:
+PASS - local run_pipeline completed for the fixture project
+PASS - pending skill count >= 1
+PASS - pending strategy count >= 1
+Review:
+PASS - pending review rendered the mandatory install workflow
+Artifacts:
+Raw logs: <artifacts-dir>/
+Expected summary reference: scripts/claude-acceptance-smoke.expected.log
+RESULT: PASS

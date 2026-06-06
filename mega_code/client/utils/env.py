@@ -10,7 +10,6 @@ import sys
 # Key environment variables to show in diagnostics
 _ENV_DEBUG_KEYS = [
     "MEGA_CODE_CLIENT_MODE",
-    "MEGA_CODE_SERVER_URL",
     "OTEL_EXPORTER_OTLP_ENDPOINT",
 ]
 

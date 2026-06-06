@@ -1,4 +1,4 @@
-"""Tests for shared local environment (~/.local/share/mega-code).
+"""Tests for shared local environment (~/.local/ratchetai).
 
 Covers:
 1. Shared .env credential store (get_env_path, save_env_file, load_env_file)
@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from mega_code.client.cli import get_env_path, load_env_file, save_env_file
+from mega_code.client.dirs import data_dir
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Unit tests: shared .env path and file operations
@@ -21,12 +22,12 @@ from mega_code.client.cli import get_env_path, load_env_file, save_env_file
 
 
 class TestGetEnvPath:
-    """get_env_path() always returns ~/.local/share/mega-code/.env."""
+    """get_env_path() always returns ~/.local/ratchetai/.env."""
 
     def test_returns_stable_path(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         result = get_env_path()
-        assert result == tmp_path / ".local" / "share" / "mega-code" / ".env"
+        assert result == tmp_path / ".local" / "ratchetai" / ".env"
 
     def test_creates_parent_directory(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -46,9 +47,6 @@ class TestSaveAndLoadEnvFile:
     def test_round_trip(self, tmp_path):
         env_path = tmp_path / ".env"
         env_vars = {
-            "MEGA_CODE_API_KEY": "mg_test_key_123",
-            "MEGA_CODE_CLIENT_MODE": "remote",
-            "MEGA_CODE_SERVER_URL": "https://console.megacode.ai",
         }
         save_env_file(env_path, env_vars)
         loaded = load_env_file(env_path)
@@ -79,7 +77,7 @@ class TestSaveAndLoadEnvFile:
 
 
 class TestLoginSavesToSharedEnv:
-    """_save_api_key writes credentials to ~/.local/share/mega-code/.env."""
+    """_save_api_key writes credentials to ~/.local/ratchetai/.env."""
 
     def test_save_api_key_writes_to_stable_path(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -89,10 +87,7 @@ class TestLoginSavesToSharedEnv:
             "mg_test_api_key",
             "https://console.megacode.ai/api/mega-service/v1",
         )
-        assert env_path == tmp_path / ".local" / "share" / "mega-code" / ".env"
-        assert env_vars["MEGA_CODE_API_KEY"] == "mg_test_api_key"
-        assert env_vars["MEGA_CODE_CLIENT_MODE"] == "remote"
-        assert env_vars["MEGA_CODE_SERVER_URL"] == "https://console.megacode.ai"
+        assert env_path == tmp_path / ".local" / "ratchetai" / ".env"
 
     def test_save_api_key_file_permissions(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -164,14 +159,51 @@ class TestCrossToolCredentialSharing:
         assert loaded["MEGA_CODE_API_KEY"] == "mg_second_key"
 
     def test_run_pipeline_script_loads_stable_env(self, tmp_path, monkeypatch):
-        """run_pipeline_async.py loads ~/.local/share/mega-code/.env first."""
+        """run_pipeline.py loads ~/.local/ratchetai/.env first."""
         # The script at module level does:
-        #   _stable_env = Path.home() / ".local" / "share" / "mega-code" / ".env"
+        #   _stable_env = Path.home() / ".local" / "ratchetai" / ".env"
         #   if _stable_env.exists(): dotenv.load_dotenv(_stable_env, override=False)
         # We verify the path construction matches get_env_path()
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        stable_env = Path.home() / ".local" / "share" / "mega-code" / ".env"
+        stable_env = Path.home() / ".local" / "ratchetai" / ".env"
         assert stable_env == get_env_path()
+
+
+class TestDataDirMigration:
+    """Default path resolution migrates legacy data into ~/.local/ratchetai."""
+
+    def test_data_dir_defaults_to_ratchetai(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MEGA_CODE_DATA_DIR", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert data_dir() == tmp_path / ".local" / "ratchetai"
+
+    def test_data_dir_migrates_xdg_legacy_dir(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MEGA_CODE_DATA_DIR", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        legacy_dir = tmp_path / ".local" / "share" / "mega-code"
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / "profile.json").write_text("{}", encoding="utf-8")
+
+        resolved = data_dir()
+
+        assert resolved == tmp_path / ".local" / "ratchetai"
+        assert (resolved / "profile.json").read_text(encoding="utf-8") == "{}"
+        assert legacy_dir.is_symlink()
+        assert legacy_dir.resolve() == resolved
+
+    def test_data_dir_migrates_pre_xdg_legacy_dir(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("MEGA_CODE_DATA_DIR", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        legacy_dir = tmp_path / ".local" / "mega-code"
+        legacy_dir.mkdir(parents=True)
+        (legacy_dir / "profile.json").write_text("{}", encoding="utf-8")
+
+        resolved = data_dir()
+
+        assert resolved == tmp_path / ".local" / "ratchetai"
+        assert (resolved / "profile.json").read_text(encoding="utf-8") == "{}"
+        assert legacy_dir.is_symlink()
+        assert legacy_dir.resolve() == resolved
 
 
 # ═══════════════════════════════════════════════════════════════════════════

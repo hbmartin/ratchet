@@ -18,7 +18,9 @@ The current OSS runtime is built around a single design decision:
   - cross-process status polling,
   - stop requests,
   - local curation over previously distilled knowledge,
-  - a feedback loop that changes later retrieval results.
+  - a feedback loop that changes later retrieval results,
+  - provenance-aware validation, trust, and safety gating before prior knowledge
+    can influence future sessions.
 
 The implementation is intentionally split into a small set of responsibilities:
 
@@ -38,28 +40,43 @@ The local runtime can be understood as five connected loops:
 
 2. **Asynchronous extraction**
    - `trigger_pipeline_run()` creates a run record and spawns a detached worker,
-   - the worker distills local sessions into:
-     - pending skills,
-     - pending strategies,
-     - PCR fragments.
+   - the worker runs a clustered closed-loop distiller that:
+     - extracts session traces with keywords, tools, paths, env fingerprints,
+       error windows, and correction windows,
+     - clusters traces by project/anchor similarity,
+     - runs success and error analyst LLM passes per cluster,
+     - consolidates proposals into canonical workflows, strategies, and memory
+       fragments,
+     - synthesizes operators from the consolidated workflow,
+     - persists PCR fragments from consolidated memory fragments.
 
 3. **Persistence**
    - rendered artifacts are written to file trees for human review and install,
-   - normalized state is written to SQLite.
+   - normalized state is written to SQLite, including governance metadata on
+     every artifact, fragment, and operator.
 
 4. **Retrieval / curation**
-   - `wisdom_curate()` ranks PCR fragments via hybrid semantic + lexical scoring,
-   - dependencies are expanded,
-   - an ordered cheatmap is assembled.
+   - `wisdom_curate()` runs hybrid seed retrieval across procedure/context/outcome
+     facets plus contextual lexical matching,
+   - seeds are fused with reciprocal-rank fusion (RRF),
+   - structural expansion uses personalized PageRank over the operator graph,
+   - reranking combines seed, structural, facet, contextual, env-match, support,
+     recency, provenance, and reliability signals,
+   - conflict suppression removes mutually exclusive operators,
+   - topological wave planning produces dependency-respecting execution waves
+     with compact per-step context packages.
 
 5. **Feedback**
-   - `wisdom_feedback()` stores curation feedback locally,
-   - fragment feedback scores are updated,
-   - subsequent retrievals see that updated signal.
+   - `wisdom_feedback()` stores per-step causal feedback,
+   - operator reliability metrics (helped/hurt/unused/missing counts, calibration
+     error, Brier score) are aggregated per operator,
+   - `feedback_score` is a derived compatibility score from empirical evidence,
+   - subsequent retrievals consult reliability when computing predicted success,
+     abstention probability, and dynamic governance gate eligibility.
 
 ## 3. Module Map
 
-### 3.1 New local runtime package
+### 3.1 Local runtime package
 
 The local runtime lives under `mega_code/pipeline/`.
 
@@ -82,15 +99,25 @@ The local runtime lives under `mega_code/pipeline/`.
   - SQLite-backed runtime state store,
   - owns schema initialization,
   - owns pipeline run state,
-  - owns artifact/PCR persistence,
-  - owns curation and feedback persistence.
+  - owns artifact/PCR/operator persistence,
+  - owns provenance, validation, and trust metadata,
+  - owns curation and feedback persistence,
+  - owns operator reliability aggregation and derived metrics.
 
 - `mega_code/pipeline/runtime.py`
   - pure runtime logic,
-  - session loading,
-  - heuristic distillation,
-  - PCR creation,
-  - hybrid retrieval,
+  - session trace extraction (`_build_session_trace`, `_build_session_traces`),
+  - trace clustering (`_cluster_traces`, `_connected_components`),
+  - analyst LLM passes (`_run_analyst_pass`),
+  - proposal grouping (`_group_proposals`),
+  - consolidator LLM pass (`_run_consolidator_pass`),
+  - cluster-level distillation (`distill_cluster`),
+  - single-session fallback distillation (`distill_session`),
+  - operator synthesis (`_operator_payloads`),
+  - PCR fragment creation (`_build_pcr_payloads`),
+  - governance payload construction (`_build_governance_payload`),
+  - operator-graph retrieval with RRF, PageRank, reranking, wave planning,
+  - safety-gated reuse and dynamic governance evaluation,
   - cheatmap generation.
 
 - `mega_code/pipeline/llm.py`
@@ -105,28 +132,46 @@ The local runtime lives under `mega_code/pipeline/`.
   - executes local distillation,
   - writes terminal state back to SQLite.
 
-### 3.2 Existing client modules affected
+### 3.2 Client modules
 
 - `mega_code/client/api/__init__.py`
   - now always resolves to local mode,
   - lazily imports `MegaCodeLocal` to avoid import cycles.
 
 - `mega_code/client/api/protocol.py`
-  - now includes `wisdom_curate()` and `wisdom_feedback()` in the shared client protocol.
+  - shared client protocol including `wisdom_curate()` and `wisdom_feedback()`,
+  - data models: `OperatorPlanItem`, `WisdomResultItem`, `WisdomCurateResult`,
+    `WisdomFeedbackResult`, `ReliabilityMetrics`, `CausalStepFeedbackItem`,
+    `SkillRefItem`.
 
 - `mega_code/client/cli.py`
-  - now treats local mode as canonical,
+  - treats local mode as canonical,
   - no longer gates pipeline or curation commands on `MegaCodeRemote`.
 
 - `mega_code/client/check_auth.py`
-  - no longer checks `MEGA_CODE_API_KEY`,
-  - now validates local provider setup instead.
+  - validates local provider setup instead of `MEGA_CODE_API_KEY`.
 
 - `mega_code/client/skill_installer.py`
   - can install from local source paths when `SkillRefItem.url` is empty.
 
 - `mega_code/client/run_pipeline.py`
   - wording and mode semantics now describe a local worker, not a server.
+
+- `mega_code/client/compaction.py`
+  - code block compaction for token reduction using regex-based placeholder
+    replacement,
+  - pure module with zero pipeline dependencies.
+
+- `mega_code/client/curation_store.py`
+  - file-based curation lifecycle persistence,
+  - tracks curations through `pending` -> `running` -> `completed` status
+    transitions using directory-based organization.
+
+- `mega_code/client/host_llm.py`
+  - host-agent LLM abstraction for skill evaluation,
+  - detects available coding agent CLI (Claude Code, Codex, etc.) and runs
+    isolated completions via subprocess,
+  - no external API keys required; uses the agent's own model.
 
 ## 4. Client and Mode Resolution
 
@@ -180,6 +225,9 @@ Key subpaths used by the local runtime:
 
 - `knowledge/strategies/{strategy_name}/{strategy_name}.md`
   - rendered local strategy sources.
+
+- `curations/{status}/`
+  - file-based curation lifecycle persistence (`pending`, `running`, `completed`).
 
 - existing pending/install locations remain unchanged:
   - `data/pending-skills/...`
@@ -249,6 +297,13 @@ Fields:
 - `content`
 - `metadata_json`
 - `source_path`
+- `content_digest`
+- `validation_level`
+- `trust_tier`
+- `safety_gate_status`
+- `safety_gate_reason`
+- `last_validated_at`
+- `provenance_json`
 - `created_at`
 - `embedding_json`
 
@@ -276,11 +331,166 @@ Fields:
 - `source_artifact`
 - `dependency_ids_json`
 - `feedback_score`
+- `content_digest`
+- `validation_level`
+- `trust_tier`
+- `safety_gate_status`
+- `safety_gate_reason`
+- `last_validated_at`
+- `provenance_json`
 - `created_at`
 - `embedding_json`
 - `lexical_text`
 
-This table is the core of the local curation system.
+This table remains the atomic validated-knowledge store, but the current local
+curation path primarily retrieves through the operator graph and uses PCR
+fragments as provenance-rich memory units.
+
+#### `operators`
+
+Purpose:
+- store executable step-level knowledge units for local curation.
+
+Fields:
+- `operator_id`
+- `artifact_id`
+- `run_id`
+- `project_id`
+- `session_id`
+- `name`
+- `title`
+- `procedure`
+- `context`
+- `outcome`
+- `source_artifact`
+- `normalized_intent`
+- `slot_signature`
+- `feedback_score`
+- `content_digest`
+- `validation_level`
+- `trust_tier`
+- `safety_gate_status`
+- `safety_gate_reason`
+- `last_validated_at`
+- `provenance_json`
+- `created_at`
+
+#### `operator_procedure_index`, `operator_context_index`, `operator_outcome_index`
+
+Purpose:
+- facet-level indexes for hybrid semantic + lexical retrieval.
+
+Fields (identical across all three):
+- `operator_id`
+- `facet_text`
+- `embedding_json`
+- `lexical_text`
+
+Each facet index stores the text, its embedding vector, and a tokenized lexical
+form used for BM25-style scoring during retrieval.
+
+#### `operator_edges`
+
+Purpose:
+- directed graph edges between operators.
+
+Fields:
+- `edge_id`
+- `source_operator_id`
+- `target_operator_id`
+- `edge_type` (`depends_on`, `requires_context`, `supersedes`, `conflicts_with`)
+- `metadata_json`
+- `created_at`
+
+#### `operator_preconditions`
+
+Purpose:
+- environment or tooling requirements that must hold before an operator can run.
+
+Fields:
+- `precondition_id`
+- `operator_id`
+- `precondition_type` (`tool`, `file`, `env_var`, `package_manager`)
+- `key_name`
+- `value`
+- `description`
+- `created_at`
+
+#### `operator_postconditions`
+
+Purpose:
+- expected outcomes or artifacts produced by an operator.
+
+Fields:
+- `postcondition_id`
+- `operator_id`
+- `postcondition_type` (`evidence`, `verification`, `artifact`)
+- `key_name`
+- `value`
+- `description`
+- `created_at`
+
+#### `operator_slots`
+
+Purpose:
+- parameterizable bindings (file paths, env vars, branches) captured from the
+  source session.
+
+Fields:
+- `slot_id`
+- `operator_id`
+- `slot_name`
+- `slot_type` (`path`, `env_var`, `branch`)
+- `slot_value`
+- `required`
+- `description`
+- `created_at`
+
+#### `operator_env_fingerprints`
+
+Purpose:
+- captured environment context at distillation time for environment-match scoring.
+
+Fields:
+- `operator_id`
+- `fingerprint_json`
+- `lexical_text`
+- `fingerprint_hash`
+
+The fingerprint includes:
+- `project_path`, `language`, `frameworks`, `package_manager`, `branch`, `model`,
+  `required_tools`, `env_var_presence`.
+
+#### `operator_reliability`
+
+Purpose:
+- empirical reliability aggregates derived from causal feedback events.
+
+Fields:
+- `operator_id`
+- `selection_count`
+- `helped_count`
+- `hurt_count`
+- `unused_count`
+- `retrieval_miss_count`
+- `execution_miss_count`
+- `abstain_count`
+- `predicted_success_sum`
+- `confidence_sum`
+- `calibration_error_sum`
+- `brier_score_sum`
+- `outcome_count`
+- `last_feedback_at`
+
+These counters are used to derive:
+- `prior_success` (evidence-based prior probability of helping),
+- `confidence` (based on evidence volume and calibration),
+- `retrieval_precision` (helpful rate among retrieved instances),
+- `execution_success_rate` (success rate when executed),
+- `calibration_error` (mean abs error of predicted vs observed),
+- `brier_score` (mean squared error of predicted vs observed),
+- `empirical_reliability` (evidence-weighted trust score),
+- `abstain_probability` (probability the system should abstain).
 
 #### `curation_sessions`
 
@@ -293,6 +503,10 @@ Fields:
 - `curation`
 - `skills_json`
 - `wisdoms_json`
+- `operator_plan_json`
+- `confidence`
+- `should_abstain`
+- `abstain_reason`
 - `token_count`
 - `cost_usd`
 - `created_at`
@@ -301,12 +515,34 @@ Fields:
 #### `curation_feedback`
 
 Purpose:
-- persist textual feedback linked to a curation session.
+- persist feedback linked to a curation session.
 
 Fields:
 - `feedback_id`
 - `session_id`
 - `feedback_text`
+- `failure_stage` (`none`, `retrieval`, `execution`, `mixed`, `unknown`)
+- `should_abstain`
+- `summary_json`
+- `created_at`
+
+#### `curation_feedback_steps`
+
+Purpose:
+- persist per-step causal feedback for individual operators in a curation.
+
+Fields:
+- `step_feedback_id`
+- `feedback_id`
+- `session_id`
+- `operator_id`
+- `operator_title`
+- `verdict` (`helped`, `hurt`, `unused`, `missing`)
+- `failure_stage`
+- `selected`
+- `predicted_success`
+- `predicted_confidence`
+- `note`
 - `created_at`
 
 ## 6. Provider Integration
@@ -460,7 +696,7 @@ Stopping is cooperative with a hard signal fallback.
 3. sends `SIGTERM` to the recorded `pid` when possible.
 
 The worker also checks `store.is_stop_requested(run_id)` during distillation so
-it can stop gracefully between sessions.
+it can stop gracefully between clusters.
 
 ## 9. Session Loading
 
@@ -491,101 +727,229 @@ stack just for the local pipeline.
 
 ## 10. Distillation Strategy
 
-The current OSS distillation logic is intentionally heuristic and deterministic.
+The current OSS distillation logic uses a clustered closed-loop pipeline that
+combines heuristic trace extraction with structured LLM analysis passes. The
+pipeline operates at the cluster level rather than the individual session level.
 
-It is not attempting to fully reproduce a proprietary extraction pipeline.
-Instead, it provides a concrete local implementation that preserves the core
-MEGA-Code behavior:
+### 10.1 Trace extraction
 
-- distill reusable artifacts,
-- decompose them into atomic retrievable units,
-- feed them back into later work.
+`_build_session_trace()` converts each `TurnSet` into a `SessionTrace` containing:
 
-### 10.1 Skill naming
+- `keywords`: frequency-ranked tokens from commands, tool names, and content,
+- `dominant_tools`: most common tool/command names,
+- `referenced_paths`: file paths extracted from step commands and evidence,
+- `referenced_env_vars`: environment variable names extracted from step text,
+- `env_fingerprint`: project-level environment context derived from manifest
+  files (package.json, pyproject.toml, go.mod, Cargo.toml, Gemfile),
+- `descriptor_text`: combined text of first user prompt, keywords, tools, paths,
+  and step labels,
+- `descriptor_embedding`: vector embedding of the descriptor text,
+- `steps`: all steps extracted from turns (commands, tool calls, analysis),
+- `success_steps`: non-error steps,
+- `error_windows`: each error step with its previous step and up to 3 recovery
+  steps,
+- `correction_windows`: error steps that have recovery steps following them.
 
-`_derive_skill_name()`:
+### 10.2 Environment fingerprinting
 
-- tokenizes commands, tool names, and content,
-- removes stop words,
-- takes top keywords,
-- generates a kebab-case skill name.
+`_inspect_project_fingerprint()` reads project manifest files to detect:
 
-### 10.2 Step extraction
+| Manifest | Language | Frameworks | Package Manager |
+|----------|----------|------------|-----------------|
+| `package.json` | JS/TS | next, react, vite, express, nestjs, astro, svelte | pnpm, yarn, bun, npm |
+| `pyproject.toml` | Python | fastapi, django, flask, sqlalchemy, pytest, celery | uv, poetry, pip |
+| `go.mod` | Go | gin, gorm, cobra | go |
+| `Cargo.toml` | Rust | axum, tokio, sqlx, actix | cargo |
+| `Gemfile` | Ruby | rails, sinatra, sidekiq | bundler |
 
-`_collect_steps()` scans turns in priority order:
+The fingerprint also records: branch, model, required tools, and env var presence.
 
-- commands,
-- tool calls,
-- assistant reasoning.
+### 10.3 Session clustering
 
-Each step stores:
-- kind,
-- label,
-- source turn id,
-- evidence snippet,
-- error flag.
+`_cluster_traces()` groups traces into `TraceCluster` objects:
 
-The resulting step list is:
-- deduplicated,
-- capped,
-- guaranteed non-empty.
+- **Similarity metric**: weighted combination of:
+  - 0.6 × cosine similarity of descriptor embeddings,
+  - 0.25 × Jaccard similarity of dominant tools,
+  - 0.15 × Jaccard similarity of referenced paths.
+- **Hard constraints**: traces with different languages or package managers
+  cannot cluster (`_cluster_pair_allowed`).
+- **Connected components**: traces above a similarity threshold (0.72, or 0.68
+  for anchor neighbors) are connected; connected components form clusters.
+- **Anchor mode**: when a `session_id` is specified, only the cluster containing
+  that session is emitted, with neighbors capped at 4.
 
-### 10.3 Skill rendering
+### 10.4 Success seed extraction
 
-`_build_skill_markdown()` constructs:
+`_success_seed_candidates()` extracts workflow step candidates from each trace's
+success steps, classified by target:
 
-- frontmatter,
-- summary,
-- workflow section,
-- basic guardrails.
+- `canonical_workflow`: normal workflow steps,
+- `verification_loop`: test/lint/check/build steps.
 
-The file is not intended to be a perfect human-authored skill. It is intended
-to be:
+Candidates are bucketed by (target, title), aggregating evidence session IDs and
+support counts across cluster members.
 
-- installable,
-- inspectable,
-- retrievable,
-- traceable to source evidence.
+### 10.5 Error seed extraction
 
-### 10.4 Strategy rendering
+`_error_seed_candidates()` extracts candidates from error and correction windows:
 
-`_build_strategy_markdown()` focuses on:
+- `correction_patterns`: how recovery proceeds after failure,
+- `when_to_retry`: conditions under which retrying is appropriate,
+- `failure_guards`: steps that should not be continued past on failure,
+- `when_to_stop`: signals to stop retrying without new evidence.
 
-- repeated choices,
-- fallback behavior,
-- error-aware correction patterns.
+### 10.6 Analyst LLM passes
 
-When error steps exist, they are explicitly encoded into the strategy.
+Two structured LLM passes analyze each cluster:
 
-### 10.5 PCR fragment creation
+- **Success Analyst** (`_run_analyst_pass` with `SUCCESS_ANALYST` marker):
+  reviews success candidates and returns JSON proposals.
+- **Error Analyst** (`_run_analyst_pass` with `ERROR_ANALYST` marker):
+  reviews error candidates and returns JSON proposals.
 
-Each step becomes a PCR fragment with:
+Both passes receive the cluster ID, member session IDs, keywords, and
+stripped candidates. They return `_AnalystPass` objects containing typed
+`_AnalystProposal` entries.
 
-- `procedure`
-  - the normalized step label,
-- `context`
-  - project path, branch, model,
-- `resultant`
-  - evidence snippet from the session,
-- `constraints`
-  - simple execution guardrails,
-- `evidence_refs`
-  - session id and turn id,
-- `dependency_ids`
-  - previous step fragment when a dependency chain exists,
-- `embedding`
-  - provider-generated vector,
-- `lexical_text`
-  - flattened text used for lexical ranking.
+Proposals are matched back to the original candidates by normalized lookup keys
+to preserve representative step metadata (kind, command, tool_name, tool_target).
 
-The result is a small dependency-aware procedure graph per distilled skill.
+### 10.7 Proposal grouping
+
+`_group_proposals()` deduplicates the combined analyst proposals:
+
+- proposals are embedded,
+- ranked by support count,
+- grouped when they share the same target and either:
+  - have the same normalized title, or
+  - have cosine similarity >= 0.84.
+
+Each group keeps the highest-support representative and merges evidence session
+IDs and examples.
+
+### 10.8 Consolidator LLM pass
+
+`_run_consolidator_pass()` takes the grouped proposals and produces a
+`_ConsolidatedCluster` containing:
+
+- `summary`: short cluster description,
+- `applicability`: when to use this workflow,
+- `canonical_workflow`: ordered `_WorkflowItem` list with titles, rules,
+  evidence, and support counts,
+- `verification_loop`: verification steps,
+- `failure_guards`: failure guardrails,
+- `strategy`: `_StrategySections` with delta rules, correction patterns,
+  when to retry, when to stop, and support signals,
+- `memory_fragments`: `_MemoryFragment` list for PCR persistence,
+- `keywords`: cluster-level keywords.
+
+When the consolidator returns empty sections, the runtime fills them from
+grouped proposals as a deterministic fallback.
+
+### 10.9 Skill rendering
+
+`_build_cluster_skill_markdown()` constructs:
+
+- frontmatter with cluster metadata,
+- summary from the consolidator,
+- applicability rules,
+- canonical workflow with per-step rules, support counts, and examples,
+- verification loop,
+- failure guards,
+- cluster evidence (sessions, dominant tools, error rate, correction count).
+
+### 10.10 Strategy rendering
+
+`_build_cluster_strategy_markdown()` constructs:
+
+- delta rules,
+- correction patterns,
+- when-to-retry rules,
+- when-to-stop rules,
+- support signals,
+- cluster evidence summary.
+
+### 10.11 Governance payload construction
+
+`_build_governance_payload()` constructs a governance record for each distilled
+artifact:
+
+- `content_digest`: SHA-256 of the rendered content,
+- `validation_level`: `observed` (no tests), `verified` (has test artifacts),
+  or `reproduced` (support >= 2 and has test artifacts),
+- `trust_tier`: `provisional` (observed), `trusted` (verified/reproduced),
+  or `hardened` (reproduced with corrections),
+- `safety_gate_status`: `approved`, `review_required`, or `blocked`,
+- `safety_gate_reason`: human-readable explanation,
+- `provenance`:
+  - `source_sessions`: deduplicated session IDs,
+  - `source_paths`: referenced file paths,
+  - `evidence_digest`: SHA-256 of the provenance chain,
+  - `test_artifacts`: verification steps extracted from success steps
+    (`_verification_artifacts_from_steps`),
+  - `test_artifact_digest`: SHA-256 of the test artifacts,
+  - `revalidation_triggers`: conditions that should trigger re-evaluation
+    (source artifact digest changed, package manager changed, framework
+    stack changed, etc.),
+  - `rollback_lineage`: error/recovery pairs from correction windows,
+  - `support_count`, `correction_count`, `error_rate`.
+
+Operators and PCR fragments receive cloned governance payloads with additional
+provenance fields (`source_artifact_digest`, `operator_index`, `step_kind`,
+`step_paths`, `fragment_kind`, `fragment_sessions`).
+
+### 10.12 PCR fragment creation
+
+Each consolidated memory fragment becomes a PCR fragment with:
+
+- `procedure`: the fragment's procedure text,
+- `context`: the fragment's context text,
+- `resultant`: the fragment's resultant text,
+- `constraints`: the fragment's constraint text,
+- `evidence_refs`: session IDs from the consolidator,
+- `source_artifact`: parent skill name,
+- `dependency_ids`: empty (fragments are independent),
+- `embedding`: provider-generated vector,
+- `lexical_text`: concatenated searchable text,
+- governance fields cloned from the parent artifact.
+
+### 10.13 Operator synthesis
+
+`_operator_payloads()` creates operators from the consolidated canonical workflow:
+
+Each operator receives:
+
+- `procedure`: normalized step procedure text,
+- `context`: project/language/framework context text,
+- `outcome`: expected outcome or recovery text,
+- `normalized_intent`: tokenized step label (first 8 tokens),
+- `slot_signature`: hash of the operator's parameterizable slots,
+- three facet indexes (procedure, context, outcome), each with:
+  - `facet_text`, `embedding`, `lexical_text`,
+- `edges`:
+  - `depends_on` to previous operator (preserve step order),
+  - `requires_context` to last analysis operator (context establishment),
+- `preconditions`: derived from step commands/labels/evidence:
+  - tool availability, file existence, env var presence, package manager,
+- `postconditions`: expected evidence snippets, verification commands, artifact
+  paths,
+- `slots`: parameterizable bindings (paths, env vars, branches),
+- `env_fingerprint`: cluster-level environment context with hash,
+- governance fields cloned from the parent artifact.
+
+### 10.14 Single-session fallback
+
+`distill_session()` provides a simpler non-clustered path for individual sessions.
+It follows the same governance, operator, and PCR creation patterns but without
+the clustering, analyst, and consolidator passes.
 
 ## 11. Artifact Persistence
 
 After distillation, the runtime writes both:
 
 - pending outputs for normal MEGA-Code review flow,
-- normalized artifacts and PCR fragments into SQLite.
+- normalized artifacts, PCR fragments, and operators into SQLite.
 
 ### 11.1 File persistence
 
@@ -608,7 +972,16 @@ The worker returns an `OutputsResult` with:
 The existing `run_pipeline.py` flow then continues to save these into the
 established pending directories via `save_outputs_to_pending()`.
 
-This preserves the review/install UX already used elsewhere in the repo.
+Pending skills now carry the same governance summary exposed in SQLite:
+
+- whether validation passed,
+- validation level,
+- trust tier,
+- safety gate status and reason.
+
+This preserves the review/install UX already used elsewhere in the repo while
+making "validated knowledge" a runtime-visible state rather than only a docs
+claim.
 
 ## 12. Local Curation and Retrieval
 
@@ -618,63 +991,141 @@ This preserves the review/install UX already used elsewhere in the repo.
 
 ### 12.2 Candidate corpus
 
-Candidates are loaded from `pcr_fragments`, joined with their parent artifacts.
+Candidates are loaded from `operators`, joined with their parent artifacts.
 
-Each fragment carries two retrieval-friendly representations:
+Each operator carries:
 
-- a vector embedding,
-- a lexical text field.
+- three facet indexes:
+  - procedure,
+  - context,
+  - outcome,
+- an environment fingerprint,
+- dependency/context/conflict edges,
+- empirical reliability metrics,
+- governance metadata:
+  - validation level,
+  - trust tier,
+  - safety gate status,
+  - provenance and revalidation triggers.
 
-### 12.3 Ranking algorithm
+### 12.3 Dynamic governance gate
 
-The current local ranking pipeline is hybrid:
+Before ranking, the runtime applies `_evaluate_operator_governance()`:
 
-1. embed the query,
-2. compute cosine similarity against fragment embeddings,
-3. tokenize lexical text and compute BM25-style scores,
-4. normalize semantic and lexical scores independently,
-5. add lightweight boosts for:
-   - feedback,
-   - recency,
-   - provenance (`source_path` exists),
-6. sort descending by final score.
+- superseded operators are removed first,
+- `observed` knowledge defaults to `review_required`,
+- source-artifact digest drift can downgrade an otherwise approved operator,
+- package-manager or language drift can trigger revalidation,
+- repeated harmful or abstention feedback can hard-block reuse.
 
-Current weighting:
+Only operators that pass this safety gate are eligible to influence future
+curations. The governance gate counts (approved, review_required, blocked) are
+surfaced in the curation output.
 
-- semantic: `0.5`
-- lexical: `0.3`
-- feedback: additive
-- recency: additive
-- provenance: additive
+### 12.4 Facet scoring
 
-This is intentionally simple and fully local. The goal is exact, debuggable
-retrieval, not ANN scale.
+Each eligible operator is scored independently across four dimensions:
 
-### 12.4 Dependency expansion
+1. **Procedure facet**: 0.65 × semantic + 0.35 × BM25 lexical,
+2. **Context facet**: same weights,
+3. **Outcome facet**: same weights,
+4. **Contextual lexical**: BM25 over a combined text including operator title,
+   source artifact, intent, all facet lexical texts, fingerprint text, and
+   dependency titles.
 
-After selecting top seeds, dependency ids are collected and included as needed.
+### 12.5 Seed selection via RRF
 
-Ordering is produced by a depth-first visit over dependency ids, giving a
-deterministic dependency-first output ordering suitable for cheatmap assembly.
+The top-ranked operators from each of the four scoring dimensions are fused
+using reciprocal-rank fusion (RRF, rank constant = 60). Seeds are the top
+min(top_k, 6) operators from the fused ranking.
 
-### 12.5 Cheatmap generation
+### 12.6 Structural expansion via PageRank
 
-The current curation document contains:
+`_personalized_pagerank()` diffuses seed scores through the operator graph:
+
+- damping factor (alpha) = 0.82,
+- 15 iterations,
+- edges traversed: `depends_on`, `requires_context`.
+
+Operators with structural scores above a floor threshold (max(0.08, peak × 0.3))
+are added as frontier nodes. The full dependency closure is expanded to ensure
+all prerequisites are included.
+
+### 12.7 Reranking
+
+The expanded set is reranked with weighted signals:
+
+| Signal | Weight |
+|--------|--------|
+| Seed score (RRF) | 0.34 |
+| Structural score (PageRank) | 0.24 |
+| Best facet score | 0.14 |
+| Contextual score | 0.08 |
+| Environment match score | 0.14 |
+| Structural support score | 0.06 |
+| Recency boost | additive (max 0.08) |
+| Provenance boost | additive (0.04 if source path exists) |
+| Reliability boost | additive (from empirical metrics) |
+| Dependency penalty | subtractive (0.02 × excess deps) |
+
+### 12.8 Conflict suppression
+
+After reranking, operators are selected in score order. When an operator is
+selected, any operators in its `conflicts_with` set are dropped.
+
+### 12.9 Topological wave planning
+
+`_topological_waves()` arranges the selected operators into execution waves:
+
+- earlier waves establish required context or prerequisites,
+- later waves carry dependent execution steps,
+- operators in the same wave may be marked `parallelizable`,
+- missing preconditions or slots change readiness status to `blocked`.
+
+### 12.10 Prediction metrics
+
+For each operator, `_current_prediction_metrics()` computes:
+
+- `predicted_success`: estimated probability of helping on the current task,
+- `confidence`: confidence in the prediction based on evidence volume and
+  calibration,
+- `abstain_probability`: probability the system should abstain,
+- `should_abstain`: boolean flag,
+- `reliability_boost`: additive boost from empirical reliability.
+
+### 12.11 Curation-level abstention
+
+The system abstains from the entire curation when:
+
+- no operators survive retrieval and conflict filtering,
+- all top candidates have `should_abstain=True`,
+- best confidence < 0.45,
+- best predicted success < 0.42.
+
+### 12.12 Cheatmap generation
+
+The curation document contains:
 
 - problem statement,
 - workflow heading,
-- short overview,
-- ordered steps,
-- per-step:
-  - procedure,
-  - context,
-  - resultant,
-  - score.
+- overview of the retrieval method,
+- governance summary (approved / review-required / blocked counts),
+- readiness summary (ready / blocked counts),
+- seed count and bundle size,
+- reliability summary (confidence, best predicted success, abstain flag),
+- seed matches with scores,
+- ordered execution waves with per-step:
+  - title, source artifact, score,
+  - inclusion reason,
+  - compact context package,
+  - dependency/context requirements,
+  - readiness blockers,
+  - predicted success, confidence,
+  - validation level, trust tier, safety gate status,
+  - abstention reason when applicable,
+  - reliability metrics when available.
 
-This is a local analogue of the cheatmap concept described in the README and
-research notes.
-
-### 12.6 Skill references
+### 12.13 Skill references
 
 `SkillRefItem` is used in local mode with:
 
@@ -689,25 +1140,69 @@ The installer now interprets this correctly and copies from local source.
 
 ### 13.1 Feedback persistence
 
-`wisdom_feedback()` stores:
+`save_feedback()` in `LocalStore`:
 
-- a `curation_feedback` row,
-- updates the associated `curation_sessions` row to `completed`.
+1. infers failure stage and should-abstain from feedback text when not explicitly
+   provided,
+2. resolves per-step feedback via `resolve_step_feedback()`:
+   - explicit step feedback is used directly,
+   - unstructured legacy feedback falls back to the top-ranked operator when
+     there is a clear positive or negative signal,
+3. writes a `curation_feedback` row,
+4. for each resolved step:
+   - writes a `curation_feedback_steps` row with verdict, failure stage,
+     predicted success/confidence snapshot,
+   - calls `_apply_operator_feedback_event()` to update reliability,
+5. updates the associated `curation_sessions` row to `completed`.
 
-### 13.2 Fragment score updates
+### 13.2 Operator reliability aggregation
 
-Each curation stores the selected fragment ids as `wisdoms_json`.
+`_apply_operator_feedback_event()` updates `operator_reliability`:
 
-When feedback arrives:
+- increments `selection_count` (when selected),
+- increments `helped_count`, `hurt_count`, `unused_count` (by verdict),
+- increments `retrieval_miss_count` (when failure_stage is `retrieval` or
+  `mixed`),
+- increments `execution_miss_count` (when failure_stage is `execution` or
+  `mixed`),
+- increments `abstain_count` (when should_abstain is true),
+- updates `predicted_success_sum`, `confidence_sum` from the plan snapshot,
+- computes and accumulates `calibration_error_sum` (|predicted - observed|),
+- computes and accumulates `brier_score_sum` ((predicted - observed)^2),
+- increments `outcome_count`.
 
-- each referenced fragment receives a feedback delta,
-- the delta is currently inferred heuristically from text:
-  - strong positive wording or high ratings increase score,
-  - negative wording or low ratings decrease score,
-  - otherwise a small positive default is applied.
+### 13.3 Derived reliability metrics
 
-This is intentionally lightweight but functional. It makes the loop
-stateful without needing a second model pass.
+`_summarize_operator_reliability()` derives:
+
+- `prior_success`: helped / max(selection, 1),
+- `confidence`: based on evidence volume with calibration error penalty,
+- `retrieval_precision`: (selection - retrieval_miss) / max(selection, 1),
+- `execution_success_rate`: (helped) / max(selection - unused, 1),
+- `calibration_error`: mean absolute error,
+- `brier_score`: mean squared error,
+- `empirical_reliability`: evidence-weighted trust score,
+- `abstain_probability`: derived from abstain count and hurt/selection ratio.
+
+### 13.4 Safety-gated reuse
+
+In the current runtime, "validated knowledge" specifically means knowledge that
+has survived both:
+
+- static governance recorded at distillation time,
+- dynamic governance checks at retrieval time.
+
+That dynamic check consults:
+
+- validation level,
+- trust tier,
+- source-artifact digest drift,
+- environment drift,
+- abstention history,
+- repeated harmful feedback.
+
+This is what prevents a merely observed or stale skill from automatically
+influencing later sessions.
 
 ## 14. Skill Installation
 
@@ -759,23 +1254,19 @@ now operate against the protocol client surface directly and no longer require
 
 ## 16. Testing Strategy
 
-### 16.1 New tests
+### 16.1 Test suite
 
-Added:
-
-- `tests/test_local_runtime.py`
-  - client factory returns local runtime,
-  - ingest persists `turns.jsonl`,
-  - async local pipeline lifecycle completes,
-  - outputs contain pending skills and strategies,
-  - curation returns local skill references,
-  - feedback changes later retrieval score,
-  - stop status persists,
-  - local-path install works.
-
-- `tests/test_local_setup.py`
-  - local setup passes with provider keys,
-  - local setup fails without them.
+| Test File | Coverage |
+|-----------|----------|
+| `test_local_runtime.py` | Full lifecycle: ingest, pipeline, curation, feedback, stop, install |
+| `test_local_setup.py` | Provider key validation |
+| `test_pipeline_constraints.py` | Pipeline configuration constraints |
+| `test_shared_env.py` | Shared environment variable handling |
+| `test_operator_graph.py` | Operator graph: facet retrieval, governance gating, PageRank expansion, wave planning, causal step feedback, reliability aggregation, environment-match scoring |
+| `test_runtime_cli_integration.py` | End-to-end CLI subprocess tests: pipeline trigger, curate, install, feedback, reranking across process boundaries |
+| `test_hook_contracts.py` | Hook execution paths and deterministic plugin contracts |
+| `test_skill_wrappers.py` | Skill enhancement and wrapping |
+| `test_plugin_contracts.py` | Plugin integration contracts |
 
 ### 16.2 Existing tests preserved
 
@@ -793,22 +1284,29 @@ every research aspiration described in the docs.
 
 Current limitations:
 
-- distillation is heuristic, not learned,
-- PCR generation is step-derived rather than model-generated,
+- distillation uses heuristic clustering and structured LLM passes, not learned
+  models,
+- PCR generation is consolidator-derived rather than fully model-generated,
+- validation and trust policy are heuristic and local-only,
 - feedback weighting is heuristic,
 - dependency graphs are shallow and mostly sequential,
 - retrieval is exact and SQLite-backed, not ANN-backed,
-- generation is only lightly used in the current local pipeline.
+- generation is only lightly used in the current local pipeline (analyst and
+  consolidator passes).
 
 These are acceptable for the current OSS objective because the implementation
 already provides:
 
 - a real local runtime,
+- clustered distillation with LLM analysis,
 - async runs,
 - durable state,
+- a safety-gated operator graph with facet indexes,
 - retrievable PCR fragments,
-- local cheatmap generation,
-- a working feedback loop.
+- hybrid retrieval with RRF and PageRank,
+- topological wave planning,
+- local cheatmap generation with abstention support,
+- a causal feedback loop with operator reliability tracking.
 
 ## 18. Recommended Extension Points
 
@@ -820,9 +1318,10 @@ File:
 - `mega_code/pipeline/runtime.py`
 
 Possible improvements:
-- segment traces into richer episode boundaries,
-- use provider generation to synthesize higher-quality skill bodies,
-- generate multiple strategy variants from repeated sessions.
+- richer clustering with learned similarity models,
+- multi-round analyst passes with chain-of-thought,
+- better fallback handling when LLM returns invalid JSON,
+- cross-cluster deduplication of overlapping workflows.
 
 ### Better retrieval
 
@@ -831,10 +1330,11 @@ Files:
 - `mega_code/pipeline/store.py`
 
 Possible improvements:
-- separate indexes for procedure/context/resultant,
-- richer dependency edge types,
-- reranking pass using provider generation,
-- explicit artifact-level and fragment-level negative feedback.
+- ANN indexing for large operator sets,
+- learned reranking models,
+- richer edge types (e.g., `enhances`, `specializes`),
+- stronger enterprise policy hooks for trust tiers, signatures, and review
+  approvals.
 
 ### Better feedback
 
@@ -842,9 +1342,10 @@ File:
 - `mega_code/pipeline/store.py`
 
 Possible improvements:
-- parse structured rating fields,
-- attribute feedback by step instead of whole curation,
-- decay old feedback over time.
+- decay old feedback over time,
+- store richer external test artifacts and signed provenance bundles,
+- cross-session feedback correlation,
+- A/B evaluation of retrieval quality.
 
 ### Background execution robustness
 
@@ -863,9 +1364,13 @@ The runtime should be mentally modeled as:
 
 - **collector data in**
 - **turnsets normalized**
-- **local worker distills**
-- **artifacts and PCR stored locally**
-- **curation retrieves from SQLite + files**
-- **feedback updates retrieval state**
+- **traces extracted and clustered**
+- **analyst passes refine candidates**
+- **consolidator produces canonical workflows**
+- **artifacts, PCR, and operators stored locally with governance**
+- **curation retrieves from a safety-gated operator graph via RRF + PageRank**
+- **topological wave planning produces execution-ready operator plans**
+- **causal feedback updates operator reliability**
+- **reliability informs future retrieval, prediction, and abstention**
 
-That is the core architecture introduced by the current local runtime.
+That is the core architecture of the current local runtime.

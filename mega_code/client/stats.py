@@ -320,11 +320,11 @@ def resolve_project_path(project_arg: str) -> Path:
 
     Supports three input formats:
     1. @prefix or name prefix: fuzzy match against mapping.json keys
-       e.g. '@mega-code' or 'mega-code' -> ~/.local/share/mega-code/projects/mega-code_b39e0992/
+       e.g. '@mega-code' or 'mega-code' -> ~/.local/ratchetai/projects/mega-code_b39e0992/
     2. Folder name with hash: direct lookup
-       e.g. 'mega-code_b39e0992' -> ~/.local/share/mega-code/projects/mega-code_b39e0992/
+       e.g. 'mega-code_b39e0992' -> ~/.local/ratchetai/projects/mega-code_b39e0992/
     3. Absolute/relative path: resolve via get_project_sessions_dir()
-       e.g. '/Users/foo/my-project' -> ~/.local/share/mega-code/projects/my-project_a1b2c3d4/
+       e.g. '/Users/foo/my-project' -> ~/.local/ratchetai/projects/my-project_a1b2c3d4/
 
     Args:
         project_arg: Project identifier (with optional @ prefix).

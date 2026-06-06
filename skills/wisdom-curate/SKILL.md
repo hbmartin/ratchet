@@ -13,7 +13,7 @@ execute the task.
 ## Setup
 
 ```bash
-MEGA_DIR="${CLAUDE_PLUGIN_ROOT:-$(cat ~/.local/share/mega-code/plugin-root 2>/dev/null)}"
+MEGA_DIR="${CLAUDE_PLUGIN_ROOT:-$(cat ~/.local/ratchetai/plugin-root 2>/dev/null)}"
 set -a && . "$MEGA_DIR/.env" 2>/dev/null && set +a
 uv run --directory "$MEGA_DIR" python -m mega_code.client.check_auth
 ```
@@ -127,6 +127,8 @@ Parse the JSON output and store:
 - `curation`: Markdown curation document (step-by-step workflow).
 - `skills`: List of skill references, each with `name`, `path`, `url`.
 - `wisdoms`: Underlying wisdom records.
+- `operator_plan`: Ordered operator execution-assist plan.
+- `readiness_summary`: Counts of ready vs blocked operators.
 
 ## Step 4: Present Summary + Install Decision
 
@@ -135,10 +137,16 @@ Parse the `curation` field and present a structured summary:
 ```
 Workflow: <title>
 Overview: <1-2 sentence summary>
+Readiness: <N ready>, <M blocked>
 Steps:
-1. <step title> — Skill: <skill-name>
-2. <step title> — Skill: <skill-name>
-3. <step title> — (no skill reference)
+1. <step title> — Skill: <skill-name> [ready|blocked]
+2. <step title> — Skill: <skill-name> [ready|blocked]
+3. <step title> — (no skill reference) [ready|blocked]
+
+For blocked steps, include:
+- Missing preconditions
+- Missing slots
+- Conflicts
 
 N skills recommended for this workflow.
 ```

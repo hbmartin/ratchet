@@ -383,13 +383,33 @@ def cmd_wisdom_curate(args: argparse.Namespace) -> int:
 def cmd_wisdom_feedback(args: argparse.Namespace) -> int:
     """Submit feedback on a wisdom curate session."""
     from mega_code.client.api import create_client
+    from mega_code.client.api.protocol import CausalStepFeedbackItem
 
     _load_env()
     client = create_client()
+    step_feedback: list[CausalStepFeedbackItem] | None = None
+    if args.step_feedback_json or args.step_feedback_file:
+        try:
+            raw_payload = (
+                Path(args.step_feedback_file).read_text(encoding="utf-8")
+                if args.step_feedback_file
+                else args.step_feedback_json
+            )
+            parsed = json.loads(raw_payload)
+            if isinstance(parsed, dict):
+                parsed = [parsed]
+            step_feedback = [CausalStepFeedbackItem.model_validate(item) for item in parsed]
+        except (OSError, ValueError, TypeError) as e:
+            print(f"Wisdom feedback failed: invalid step feedback payload: {e}", file=sys.stderr)
+            return 1
 
     try:
         result = client.wisdom_feedback(
-            session_id=args.session_id, feedback_text=args.feedback_text
+            session_id=args.session_id,
+            feedback_text=args.feedback_text,
+            failure_stage=args.failure_stage,
+            should_abstain=args.should_abstain or None,
+            step_feedback=step_feedback,
         )
     except (ConnectionError, TimeoutError, ValueError, OSError) as e:
         print(f"Wisdom feedback failed: {e}", file=sys.stderr)
@@ -481,6 +501,27 @@ def main():
     fb_parser = subparsers.add_parser("wisdom-feedback", help="Submit feedback on a curate session")
     fb_parser.add_argument("--session-id", required=True, help="Session ID from curate")
     fb_parser.add_argument("--feedback-text", required=True, help="Natural language feedback")
+    fb_parser.add_argument(
+        "--failure-stage",
+        default="unknown",
+        choices=["none", "retrieval", "execution", "mixed", "unknown"],
+        help="Where the miss occurred",
+    )
+    fb_parser.add_argument(
+        "--should-abstain",
+        action="store_true",
+        help="Mark that the system should have abstained instead of recommending a step",
+    )
+    fb_parser.add_argument(
+        "--step-feedback-json",
+        default="",
+        help="Inline JSON object or array with per-step causal feedback",
+    )
+    fb_parser.add_argument(
+        "--step-feedback-file",
+        default="",
+        help="Path to JSON file with per-step causal feedback",
+    )
 
     args = parser.parse_args()
 
