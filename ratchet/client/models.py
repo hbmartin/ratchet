@@ -1,10 +1,8 @@
 """Shared Pydantic models for ratchet client.
 
-Defines the core data models shared between the open-source plugin client
-and any server-side pipeline code. Client code and server-side code both
-import from this module to keep a single source of truth.
+Defines the core data models used by the local plugin runtime.
 
-Server-side code should import from here:
+Runtime code should import from here:
     from ratchet.client.models import Turn, TurnSet, SessionMetadata
     from ratchet.client.models import LessonSection, LessonDoc
 """
@@ -88,11 +86,10 @@ class SessionMetadata(BaseModel):
 class TurnSet(BaseModel):
     """A set of pre-extracted turns for a single session.
 
-    This is the universal pipeline input. Both local and server paths
-    produce TurnSets, making turns the single source of truth.
+    This is the universal pipeline input. All local ingest paths produce
+    TurnSets, making turns the single source of truth.
 
     - Local CLI: convert_sessions_to_turns() creates TurnSets from Sessions
-    - Server API: TurnSets are built directly from uploaded turn data
     """
 
     session_id: str

@@ -1,4 +1,4 @@
-"""Codex CLI trajectory sync: upload Codex sessions to remote server.
+"""Codex CLI trajectory sync: ingest Codex sessions locally.
 
 Follows the same pattern as sync.py for Ratchet sessions.
 Maintains a codex-sync-ledger.json per project directory.
@@ -26,20 +26,20 @@ def sync_codex_trajectories(
     project_id: str,
     project_path: str,
 ) -> int:
-    """Upload Codex CLI sessions matching the project path to the server.
+    """Store Codex CLI sessions matching the project path for the pipeline.
 
     Compares discovered Codex session files against codex-sync-ledger.json.
-    Uploads any sessions not yet in the ledger or with changed mtime.
+    Stores any sessions not yet in the ledger or with changed mtime.
 
     Args:
         project_dir: Local ratchet project data folder
             (e.g. ~/.local/ratchet/projects/ratchet_b39e0992/).
-        client: Authenticated client (typically RatchetRemote).
-        project_id: Project identifier for the server.
+        client: Ratchet client.
+        project_id: Project identifier.
         project_path: Actual project cwd for Codex filtering.
 
     Returns:
-        Number of newly uploaded sessions.
+        Number of newly stored sessions.
     """
     from ratchet.client.history.sources.codex import CodexSource
 

@@ -9,7 +9,8 @@ import sys
 
 # Key environment variables to show in diagnostics
 _ENV_DEBUG_KEYS = [
-    "RATCHET_CLIENT_MODE",
+    "RATCHET_LLM_MODE",
+    "RATCHET_HOST_AGENT",
     "OTEL_EXPORTER_OTLP_ENDPOINT",
 ]
 

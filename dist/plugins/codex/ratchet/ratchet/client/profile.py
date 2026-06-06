@@ -1,4 +1,4 @@
-"""Shared profile I/O — used by both cli.py and client/api/remote.py.
+"""Shared profile I/O for local CLI and client runtime.
 
 Provides get_profile_path(), load_profile(), and save_profile() without
 creating circular imports between the CLI and client layers.

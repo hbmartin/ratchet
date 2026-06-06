@@ -12,7 +12,6 @@ DATA_DIR=""
 FIXTURE_DIR=""
 ARTIFACT_DIR=""
 KEEP_TEMP=0
-UNSET_ANTHROPIC_API_KEY=0
 TEMP_DATA_DIR=0
 TEMP_FIXTURE_DIR=0
 
@@ -60,24 +59,12 @@ run_claude() {
   local output_path=$2
   shift 2
 
-  if [[ "$UNSET_ANTHROPIC_API_KEY" -eq 1 ]]; then
-    (
-      cd "$cwd"
-      env -u ANTHROPIC_API_KEY \
-        RATCHET_DATA_DIR="$DATA_DIR" \
-        OPENAI_API_KEY=sk-local \
-        RATCHET_TEST_FAKE_LLM=1 \
-        claude "$@" >"$output_path" 2>&1
-    )
-  else
-    (
-      cd "$cwd"
-      RATCHET_DATA_DIR="$DATA_DIR" \
-      OPENAI_API_KEY=sk-local \
-      RATCHET_TEST_FAKE_LLM=1 \
-      claude "$@" >"$output_path" 2>&1
-    )
-  fi
+  (
+    cd "$cwd"
+    RATCHET_DATA_DIR="$DATA_DIR" \
+    RATCHET_TEST_FAKE_LLM=1 \
+    claude "$@" >"$output_path" 2>&1
+  )
 }
 
 run_local() {
@@ -85,24 +72,12 @@ run_local() {
   local output_path=$2
   shift 2
 
-  if [[ "$UNSET_ANTHROPIC_API_KEY" -eq 1 ]]; then
-    (
-      cd "$cwd"
-      env -u ANTHROPIC_API_KEY \
-        RATCHET_DATA_DIR="$DATA_DIR" \
-        OPENAI_API_KEY=sk-local \
-        RATCHET_TEST_FAKE_LLM=1 \
-        "$@" >"$output_path" 2>&1
-    )
-  else
-    (
-      cd "$cwd"
-      RATCHET_DATA_DIR="$DATA_DIR" \
-      OPENAI_API_KEY=sk-local \
-      RATCHET_TEST_FAKE_LLM=1 \
-      "$@" >"$output_path" 2>&1
-    )
-  fi
+  (
+    cd "$cwd"
+    RATCHET_DATA_DIR="$DATA_DIR" \
+    RATCHET_TEST_FAKE_LLM=1 \
+    "$@" >"$output_path" 2>&1
+  )
 }
 
 extract_latest_run_identifiers() {
@@ -209,17 +184,7 @@ PROMPT2_LOG="$ARTIFACT_DIR/03-prompt-improvement.txt"
 PIPELINE_LOG="$ARTIFACT_DIR/04-pipeline.log"
 REVIEW_LOG="$ARTIFACT_DIR/05-pending-review.log"
 
-if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-  if env -u ANTHROPIC_API_KEY claude auth status 2>/dev/null | rg -q '"loggedIn": true'; then
-    UNSET_ANTHROPIC_API_KEY=1
-  fi
-fi
-
-if [[ "$UNSET_ANTHROPIC_API_KEY" -eq 1 ]]; then
-  env -u ANTHROPIC_API_KEY claude auth status >"$AUTH_STATUS_LOG" 2>&1 || fail "Claude auth status failed."
-else
-  claude auth status >"$AUTH_STATUS_LOG" 2>&1 || fail "Claude auth status failed."
-fi
+claude auth status >"$AUTH_STATUS_LOG" 2>&1 || fail "Claude auth status failed."
 
 rg -q '"loggedIn": true' "$AUTH_STATUS_LOG" || fail "Claude is not authenticated."
 

@@ -18,7 +18,7 @@ set -a && . "$RATCHET_DIR/.env" 2>/dev/null && set +a
 uv run --directory "$RATCHET_DIR" python -m ratchet.client.check_auth
 ```
 
-If the auth check fails (non-zero exit), show the output to the user and stop.
+If the local readiness check fails (non-zero exit), show the output to the user and stop.
 
 ## Interactive Setup (Recommended)
 
@@ -49,8 +49,4 @@ uv run --directory "$RATCHET_DIR" ratchet profile --reset
 
 ## Profile Storage
 
-Profile is saved in two places:
-
-- **Remote server** — authoritative source, persists across machines.
-  Requires a valid API key (run `/ratchet:login` first).
-- **Local mirror** `~/.local/ratchet/profile.json` — written only after a successful remote save.
+Profile is saved locally at `~/.local/ratchet/profile.json`.

@@ -1,9 +1,9 @@
 """Tests for shared local environment (~/.local/ratchet).
 
 Covers:
-1. Shared .env credential store (get_env_path, save_env_file, load_env_file)
-2. Login saves credentials to the shared location
-3. Cross-tool credential sharing (Claude Code + Codex use same path)
+1. Shared .env settings store (get_env_path, save_env_file, load_env_file)
+2. Login/setup writes local-only settings to the shared location
+3. Cross-tool settings sharing (Claude Code + Codex use same path)
 4. Bootstrap scripts create consistent data directory structure
 """
 
@@ -72,91 +72,97 @@ class TestSaveAndLoadEnvFile:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Unit tests: login saves to shared location
+# Unit tests: local setup saves to shared location
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestLoginSavesToSharedEnv:
-    """_save_api_key writes credentials to ~/.local/ratchet/.env."""
+class TestLoginSavesLocalSettings:
+    """Local setup writes only local settings to ~/.local/ratchet/.env."""
 
-    def test_save_api_key_writes_to_stable_path(self, tmp_path, monkeypatch):
+    def test_save_local_setup_writes_to_stable_path(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        from ratchet.client.login import _save_api_key
+        from ratchet.client.login import _save_local_setup
 
-        env_path, env_vars = _save_api_key(
-            "mg_test_api_key",
-            "https://console.ratchetai.ai/api/ratchetai-service/v1",
-        )
+        env_path, env_vars = _save_local_setup(llm_mode="host-cli", host_agent="codex")
         assert env_path == tmp_path / ".local" / "ratchet" / ".env"
+        assert env_vars["RATCHET_LLM_MODE"] == "host-cli"
+        assert env_vars["RATCHET_HOST_AGENT"] == "codex"
 
-    def test_save_api_key_file_permissions(self, tmp_path, monkeypatch):
+    def test_save_local_setup_file_permissions(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        from ratchet.client.login import _save_api_key
+        from ratchet.client.login import _save_local_setup
 
-        env_path, _ = _save_api_key("mg_key", "https://x.com/api/ratchetai-service/v1")
+        env_path, _ = _save_local_setup(llm_mode="deterministic")
         mode = stat.S_IMODE(env_path.stat().st_mode)
         assert mode == 0o600
 
-    def test_save_api_key_preserves_existing_vars(self, tmp_path, monkeypatch):
+    def test_save_local_setup_removes_remote_and_provider_keys(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        from ratchet.client.login import _save_api_key
+        from ratchet.client.login import _save_local_setup
 
-        # Pre-populate with an extra key
         env_path = get_env_path()
-        save_env_file(env_path, {"OPENAI_API_KEY": "sk-existing"})
+        save_env_file(
+            env_path,
+            {
+                "RATCHET_API_KEY": "mg-old",
+                "RATCHET_CLIENT_MODE": "remote",
+                "RATCHET_SERVER_URL": "old",
+                "OPENAI_API_KEY": "sk-old",
+                "RATCHET_LLM_MODE": "host-cli",
+            },
+        )
 
-        _save_api_key("mg_new_key", "https://x.com/api/ratchetai-service/v1")
+        _save_local_setup(llm_mode="deterministic")
         loaded = load_env_file(env_path)
-        assert loaded["OPENAI_API_KEY"] == "sk-existing"
-        assert loaded["RATCHET_API_KEY"] == "mg_new_key"
+        assert "RATCHET_API_KEY" not in loaded
+        assert "RATCHET_CLIENT_MODE" not in loaded
+        assert "RATCHET_SERVER_URL" not in loaded
+        assert "OPENAI_API_KEY" not in loaded
+        assert loaded["RATCHET_LLM_MODE"] == "deterministic"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Unit tests: cross-tool credential sharing
+# Unit tests: cross-tool settings sharing
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-class TestCrossToolCredentialSharing:
-    """Login from one tool (Claude Code or Codex) is visible to the other."""
+class TestCrossToolSettingsSharing:
+    """Local setup from one tool (Claude Code or Codex) is visible to the other."""
 
-    def test_login_via_claude_code_visible_to_codex(self, tmp_path, monkeypatch):
-        """Credentials saved by Claude Code login are readable by Codex CLI."""
+    def test_setup_via_claude_code_visible_to_codex(self, tmp_path, monkeypatch):
+        """Settings saved by Claude Code setup are readable by Codex CLI."""
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        from ratchet.client.login import _save_api_key
+        from ratchet.client.login import _save_local_setup
 
-        # Simulate Claude Code login
-        _save_api_key("mg_claude_key", "https://console.ratchetai.ai/api/ratchetai-service/v1")
+        _save_local_setup(llm_mode="host-cli", host_agent="claude")
 
-        # Simulate Codex reading the same .env (via the same get_env_path)
         env_path = get_env_path()
         loaded = load_env_file(env_path)
-        assert loaded["RATCHET_API_KEY"] == "mg_claude_key"
-        assert loaded["RATCHET_CLIENT_MODE"] == "remote"
+        assert loaded["RATCHET_LLM_MODE"] == "host-cli"
+        assert loaded["RATCHET_HOST_AGENT"] == "claude"
 
-    def test_login_via_codex_visible_to_claude_code(self, tmp_path, monkeypatch):
-        """Credentials saved via Codex are readable by Claude Code."""
+    def test_setup_via_codex_visible_to_claude_code(self, tmp_path, monkeypatch):
+        """Settings saved via Codex are readable by Claude Code."""
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from ratchet.client.login import _save_local_setup
 
-        # Simulate Codex login (same _save_api_key, same path)
-        from ratchet.client.login import _save_api_key
+        _save_local_setup(llm_mode="host-cli", host_agent="codex")
 
-        _save_api_key("mg_codex_key", "https://console.ratchetai.ai/api/ratchetai-service/v1")
-
-        # Claude Code reads the same file
         env_path = get_env_path()
         loaded = load_env_file(env_path)
-        assert loaded["RATCHET_API_KEY"] == "mg_codex_key"
+        assert loaded["RATCHET_HOST_AGENT"] == "codex"
 
-    def test_second_login_overwrites_api_key(self, tmp_path, monkeypatch):
-        """Re-login from another tool overwrites the API key."""
+    def test_second_setup_overwrites_local_settings(self, tmp_path, monkeypatch):
+        """Re-running setup from another tool overwrites local runtime settings."""
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        from ratchet.client.login import _save_api_key
+        from ratchet.client.login import _save_local_setup
 
-        _save_api_key("mg_first_key", "https://console.ratchetai.ai/api/ratchetai-service/v1")
-        _save_api_key("mg_second_key", "https://console.ratchetai.ai/api/ratchetai-service/v1")
+        _save_local_setup(llm_mode="host-cli", host_agent="claude")
+        _save_local_setup(llm_mode="deterministic")
 
         loaded = load_env_file(get_env_path())
-        assert loaded["RATCHET_API_KEY"] == "mg_second_key"
+        assert loaded["RATCHET_LLM_MODE"] == "deterministic"
+        assert loaded["RATCHET_HOST_AGENT"] == "claude"
 
     def test_run_pipeline_script_loads_stable_env(self, tmp_path, monkeypatch):
         """run_pipeline.py loads ~/.local/ratchet/.env first."""

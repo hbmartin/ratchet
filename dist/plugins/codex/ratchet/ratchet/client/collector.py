@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Any
 
 import dotenv
-import httpx
 
 from ratchet.client.api import create_client
 from ratchet.client.filters import filter_metadata, filter_turns
@@ -46,35 +45,12 @@ from ratchet.client.utils.tracing import get_tracer, setup_tracing
 
 logger = logging.getLogger(__name__)
 
-# Required env vars per client mode.
-# Each entry: (VAR_NAME, error_hint_or_None).
-# None means the var has a default and won't produce a warning.
-_MODE_REQUIREMENTS: dict[str, list[tuple[str, str | None]]] = {
-    "remote": [
-        (
-            "RATCHET_API_KEY",
-            "Required for server authentication. Run: ratchet configure --api-key <key>",
-        ),
-        ("RATCHET_SERVER_URL", None),  # has a built-in default
-    ],
-}
-
-
 def _validate_env_config() -> list[str]:
-    """Check required env vars for the current client mode.
+    """Return local runtime config warnings.
 
-    Returns a list of human-readable warning strings (empty if all OK).
+    The collector no longer requires hosted-service credentials.
     """
-    mode = os.environ.get("RATCHET_CLIENT_MODE", "local")
-    requirements = _MODE_REQUIREMENTS.get(mode, [])
-    warnings: list[str] = []
-    for var, hint in requirements:
-        if not os.environ.get(var):
-            msg = f"RATCHET_CLIENT_MODE={mode} but {var} is not set."
-            if hint:
-                msg += f" {hint}"
-            warnings.append(msg)
-    return warnings
+    return []
 
 
 def read_stdin() -> dict[str, Any]:
@@ -295,7 +271,7 @@ def handle_stop(input_data: dict[str, Any]) -> dict[str, Any]:
 def _get_client():
     """Get a Ratchet client instance.
 
-    Reads RATCHET_CLIENT_MODE env var (default: "local").
+    Legacy RATCHET_CLIENT_MODE values are accepted but resolve to local mode.
 
     Returns:
         A RatchetBaseClient implementation.
@@ -304,12 +280,12 @@ def _get_client():
 
 
 def _upload_trajectory(session_id: str, project_dir: str | None) -> None:
-    """Convert events.jsonl to TurnSet and upload via client.
+    """Convert events.jsonl to TurnSet and store via client.
 
     Best-effort: failures are logged but do not block session end.
 
     Args:
-        session_id: The session ID to upload.
+        session_id: The session ID to store.
         project_dir: The project directory path (for project_id derivation).
     """
     try:
@@ -336,7 +312,7 @@ def _upload_trajectory(session_id: str, project_dir: str | None) -> None:
         if not turns:
             return
 
-        # Filter sensitive data before upload
+        # Filter sensitive data before local storage
         turns = filter_turns(turns, project_dir=project_dir)
         turn_metadata = filter_metadata(turn_metadata, project_dir=project_dir)
 
@@ -353,35 +329,35 @@ def _upload_trajectory(session_id: str, project_dir: str | None) -> None:
 
         result = client.upload_trajectory(turn_set=turn_set, project_id=project_id)
         logger.info(
-            "Uploaded trajectory: session=%s project=%s status=%s",
+            "Stored trajectory: session=%s project=%s status=%s",
             session_id,
             project_id,
             result.status,
         )
 
-    except (httpx.HTTPError, OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, RuntimeError):
         # Best-effort: log but don't fail session end
         logger.warning(
-            "Failed to upload trajectory for session %s",
+            "Failed to store trajectory for session %s",
             session_id,
             exc_info=True,
         )
 
 
 def _load_env():
-    """Load credentials from the stable data-root .env, then overlay plugin .env.
+    """Load local runtime settings from stable and project .env files.
 
-    Credentials are stored in ~/.local/ratchet/.env (a fixed, version-independent
-    path that survives plugin updates).  The versioned plugin .env may still hold
-    non-secret overrides (e.g. RATCHET_SERVER_URL for dev/staging).
+    Settings are stored in ~/.local/ratchet/.env (a fixed, version-independent
+    path that survives plugin updates). The versioned plugin .env may still hold
+    non-secret runtime overrides.
 
     Search order:
-    1. ~/.local/ratchet/.env       — stable credential store (always loaded first)
+    1. ~/.local/ratchet/.env       — stable settings store (always loaded first)
     2. host plugin root .env       — versioned plugin dir (loaded after, so it can
-       override non-secret config without clobbering credentials)
+       add non-secret config)
     3. Repo root .env                — dev mode fallback
     """
-    # 1. Stable credential store (survives plugin updates)
+    # 1. Stable settings store (survives plugin updates)
     from ratchet.client.dirs import data_dir
 
     stable_env = data_dir() / ".env"

@@ -2,8 +2,7 @@
 
 Imports only from ratchet.client.* — no pipeline dependencies.
 
-The client abstraction (RatchetLocal / RatchetRemote) handles mode-specific
-details; this script only deals with:
+The local client handles runtime details; this script only deals with:
 1. CLI argument parsing and project path resolution
 2. Creating a client, triggering the pipeline, polling for completion
 3. Saving outputs to local pending folders
@@ -19,7 +18,7 @@ Usage:
     python -m ratchet.client.run_pipeline
     python -m ratchet.client.run_pipeline --project
     python -m ratchet.client.run_pipeline --project @ratchet
-    python -m ratchet.client.run_pipeline --model gemini-2.5-flash
+    python -m ratchet.client.run_pipeline --model deterministic-local
     python -m ratchet.client.run_pipeline --project --include-claude
     python -m ratchet.client.run_pipeline --project --include-codex
     python -m ratchet.client.run_pipeline --poll-existing <run_id> --project <project_id>
@@ -32,7 +31,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -41,12 +39,6 @@ from ratchet.client.cli import get_env_path, load_env_file
 from ratchet.client.config import load_config, source_enabled
 
 logger = logging.getLogger(__name__)
-
-
-def _parse_conflict_run_id(detail: str) -> str | None:
-    """Extract run_id from 409 detail string (e.g. 'run_id=abc-123')."""
-    match = re.search(r"run_id=([a-f0-9-]+)", detail)
-    return match.group(1) if match else None
 
 
 def _load_env() -> None:
@@ -240,10 +232,8 @@ async def main():
     setup_tracing(service_name="ratchet-client")
     tracer = get_tracer(__name__)
 
-    # Imports (deferred to avoid import cost when --env-debug is used)
-    import httpx
-
     from ratchet.client.api import create_client, resolve_mode
+    from ratchet.client.api.protocol import PipelineConflictError
     from ratchet.client.pending import (
         format_error_notification,
         format_pipeline_notification,
@@ -259,7 +249,7 @@ async def main():
     if model_name:
         logger.info(f"Using model: {model_name}")
     else:
-        logger.info("Model not specified — local runtime will choose based on configured provider keys")
+        logger.info("Model not specified — local runtime will use its configured local generator")
 
     # Resolve include flags
     include_claude, include_codex = _resolve_include_flags(args)
@@ -304,7 +294,7 @@ async def main():
 
             # --- Client protocol: create → trigger → poll → save ---
 
-            # Create client (auto-detects local vs remote based on mode)
+            # Create client. Deprecated remote selections are resolved to local mode.
             client_kwargs: dict = {}
             if mode == "local":
                 client_kwargs["backend"] = storage
@@ -419,33 +409,23 @@ async def main():
             output = {"additionalContext": notification.strip()}
             print(json.dumps(output))
 
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code == 409:
-                # Exit code 2 tells the run skill to prompt the user with
-                # stop/wait/leave options. The JSON on stdout provides the
-                # run_id and project_id the skill needs to act on the choice.
-                detail = exc.response.text
-                conflict_run_id = _parse_conflict_run_id(detail)
-                conflict_info = {
-                    "additionalContext": (
-                        f"A pipeline is already running for this project"
-                        f" (run_id: {conflict_run_id or 'unknown'}).\n"
-                        "Use /ratchet:stop to stop it, or wait for it to finish."
-                    ),
-                    "conflict": {
-                        "run_id": conflict_run_id,
-                        "project_id": project_id,
-                        "detail": detail,
-                    },
-                }
-                print(json.dumps(conflict_info))
-                sys.exit(2)
-            span.record_exception(exc)
-            logger.exception("Pipeline failed")
-            notification = format_error_notification(str(exc))
-            output = {"additionalContext": notification.strip()}
-            print(json.dumps(output))
-            sys.exit(1)
+        except PipelineConflictError as exc:
+            # Exit code 2 tells the run skill to prompt the user with
+            # stop/wait/leave options. The JSON on stdout provides the
+            # run_id and project_id the skill needs to act on the choice.
+            conflict_info = {
+                "additionalContext": (
+                    f"A pipeline is already running for this project (run_id: {exc.run_id}).\n"
+                    "Use /ratchet:stop to stop it, or wait for it to finish."
+                ),
+                "conflict": {
+                    "run_id": exc.run_id,
+                    "project_id": exc.project_id,
+                    "detail": exc.detail,
+                },
+            }
+            print(json.dumps(conflict_info))
+            sys.exit(2)
 
         except Exception as e:
             span.record_exception(e)

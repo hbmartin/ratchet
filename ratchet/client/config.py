@@ -22,16 +22,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "parquet": {"enabled": False, "datasets": {}},
     },
     "llm": {
-        "generation_order": [
-            "agent",
-            "ollama",
-            "lmstudio",
-            "command",
-            "gemini",
-            "openai",
-            "anthropic",
-        ],
-        "embedding_order": ["ollama", "lmstudio", "command", "openai", "gemini", "local-hash"],
+        "mode": "deterministic",
+        "generation_order": ["deterministic"],
+        "embedding_order": ["deterministic"],
         "providers": {},
     },
 }

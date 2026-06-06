@@ -44,16 +44,16 @@ Every `uv run` command must include:
 --directory "$RATCHET_DIR"
 ```
 
-### Load environment before Python commands in skills/scripts
+### Load local settings before Python commands in skills/scripts
 
-Before Python commands that depend on credentials or server config, load `.env`:
+Before Python commands that depend on local runtime settings, load `.env`:
 
 ```bash
 set -a && . "$RATCHET_DIR/.env" 2>/dev/null && set +a
 ```
 
-If a command talks to the Ratchet server, check `RATCHET_API_KEY` first and
-fail with a clear message when it is missing.
+Do not require Ratchet service credentials. Deprecated remote/client-mode values
+must be treated as compatibility no-ops.
 
 ### Keep related shell steps in one Bash block
 
@@ -121,7 +121,7 @@ Before finishing a change, verify:
 - skills use the `RATCHET_DIR` pattern when calling `uv`
 - generated Claude and Codex packages are current
 - hook commands use the correct host root
-- new server-facing commands document the required auth/env assumptions
+- new commands document local runtime settings and avoid hosted-service calls
 - instructions do not mention commands or skills that are absent from this repo
 
 ## What to avoid

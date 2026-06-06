@@ -11,7 +11,7 @@ allowed-tools: Read
 
 | Command | Description |
 |---------|-------------|
-| `/ratchet:login` | Show local provider-key setup help |
+| `/ratchet:login` | Show local setup status |
 | `/ratchet:wisdom-gen` | Run skill extraction pipeline |
 | `/ratchet:skill-enhance` | Evaluate and enhance a skill with A/B testing |
 | `/ratchet:wisdom-curate` | Curate a wisdom-backed workflow with skill installation |
@@ -56,17 +56,14 @@ paths: **/*.py
 Clear statement of the preference or convention.
 ```
 
-## Model Options
+## Generation Mode
 
-The `--model` flag for `/ratchet:wisdom-gen` accepts any model alias supported by the LLM module:
+Ratchet defaults to deterministic local embeddings and structured heuristic
+generation. Optional host-agent generation can be enabled with:
 
-| Alias | Provider |
-|-------|----------|
-| `gemini-3-flash` | Google |
-| `gpt-5-mini` | OpenAI |
-
-When no model is specified, the local runtime prefers Gemini when configured,
-otherwise OpenAI.
+```bash
+ratchet configure --llm-mode host-cli --host-agent codex
+```
 
 
 ## Tips

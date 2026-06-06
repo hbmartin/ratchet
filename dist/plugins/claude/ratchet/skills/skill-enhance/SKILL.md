@@ -250,11 +250,10 @@ uv run --directory "$RATCHET_DIR" python -m ratchet.client.skill_enhance_helper 
 This backs up the original to `$ITER_DIR/original-skill.md` and replaces `SKILL.md`
 with the enhanced version (semantic version bumped, `generated_at` refreshed, ROI from eval added).
 
-**Store on server** (creates a new DB row for the canonical enhanced skill name with the bumped semantic version and lineage metadata, while preserving the original pending-skill folder name as the lineage parent):
+**Store locally** (records the canonical enhanced skill name with the bumped semantic version and lineage metadata, while preserving the original pending-skill folder name as the lineage parent):
 
 ```bash
 set -a && . ~/.local/ratchet/.env 2>/dev/null && set +a
-export RATCHET_CLIENT_MODE=${RATCHET_CLIENT_MODE:-remote}
 uv run --directory "$RATCHET_DIR" python -m ratchet.client.skill_enhance_helper \
     store-skill \
     --skill-name "$SKILL_NAME" \
@@ -264,7 +263,7 @@ uv run --directory "$RATCHET_DIR" python -m ratchet.client.skill_enhance_helper 
     --benchmark "$ITER_DIR/benchmark.json" 2>&1
 ```
 
-If the store-skill command succeeds, tell the user the skill was stored on the server. If it fails (non-zero exit), show the error output and warn that the enhanced skill was saved locally but not stored on the server.
+If the store-skill command succeeds, tell the user the skill was stored locally. If it fails (non-zero exit), show the error output and warn that the enhanced skill file was saved but the local store update failed.
 
 **Ask the user** if they want to iterate:
 

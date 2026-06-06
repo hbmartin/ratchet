@@ -83,7 +83,7 @@ def _write_skill_identity(
     canonical_skill_name_value: str,
     original_skill_path: Path,
 ) -> None:
-    """Persist original and canonical skill identity for later server upload."""
+    """Persist original and canonical skill identity for later local storage."""
     payload = {
         "original_skill_name": original_skill_name,
         "canonical_skill_name": canonical_skill_name_value,
@@ -737,14 +737,14 @@ def _local_skill_rename_target(skill_dir: Path, canonical_name: str) -> Path | N
     return None
 
 
-@traced("skill_enhance.store_enhanced_skill_on_server")
-def store_enhanced_skill_on_server(
+@traced("skill_enhance.store_enhanced_skill_locally")
+def store_enhanced_skill_locally(
     skill_name: str,
     enhanced_content: str,
     iteration: int,
     eval_roi: dict | None = None,
 ) -> None:
-    """Store enhanced skill on server as a new versioned entry.
+    """Store enhanced skill locally as a new versioned entry.
 
     Args:
         skill_name: Original skill name.
@@ -764,11 +764,6 @@ def store_enhanced_skill_on_server(
         }
     )
 
-    mode = os.environ.get("RATCHET_CLIENT_MODE", "local")
-    if mode != "remote":
-        logger.info("Local mode — server update skipped (RATCHET_CLIENT_MODE=%r)", mode)
-        return
-
     # Build metadata with full ROI (includes test_count, success rates for analytics)
     metadata = None
     if eval_roi:
@@ -778,7 +773,7 @@ def store_enhanced_skill_on_server(
     try:
         from ratchet.client.api import create_client
 
-        client = create_client(mode="remote")
+        client = create_client()
         result = client.enhance_skill(
             skill_name=canonical_name,
             skill_md=enhanced_content,
@@ -786,11 +781,21 @@ def store_enhanced_skill_on_server(
             metadata=metadata,
         )
         if result.success:
-            logger.info("Server version created: '%s' v%s", canonical_name, version)
+            logger.info("Local enhanced skill stored: '%s' v%s", canonical_name, version)
         else:
-            logger.warning("Server enhance failed: %s", result.message)
+            logger.warning("Local enhance failed: %s", result.message)
     except (ValueError, OSError, ConnectionError) as e:
-        logger.warning("Failed to store enhanced skill on server: %s", e)
+        logger.warning("Failed to store enhanced skill locally: %s", e)
+
+
+def store_enhanced_skill_on_server(
+    skill_name: str,
+    enhanced_content: str,
+    iteration: int,
+    eval_roi: dict | None = None,
+) -> None:
+    """Compatibility alias for the removed hosted-service storage path."""
+    store_enhanced_skill_locally(skill_name, enhanced_content, iteration, eval_roi=eval_roi)
 
 
 def main() -> None:
@@ -849,7 +854,7 @@ def main() -> None:
     # store-skill
     store_parser = subparsers.add_parser(
         "store-skill",
-        help="Store enhanced skill on server with lineage metadata",
+        help="Store enhanced skill locally with lineage metadata",
     )
     store_parser.add_argument("--skill-name", required=True, help="Skill name")
     store_parser.add_argument(
@@ -919,7 +924,7 @@ def main() -> None:
         if args.benchmark:
             eval_roi = _build_eval_roi_from_benchmark(Path(args.benchmark))
 
-        store_enhanced_skill_on_server(
+        store_enhanced_skill_locally(
             args.skill_name,
             enhanced_content,
             args.iteration,
