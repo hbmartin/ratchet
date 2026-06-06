@@ -1,14 +1,14 @@
 ---
 name: ratchet-login
-description: Show the local Ratchet setup steps for configuring Gemini or OpenAI keys.
+description: Show local Ratchet setup status and optional host-agent configuration.
 argument-hint: ""
 allowed-tools: Bash, Read
 ---
 
-# Configure Local Provider Keys
+# Local Setup Status
 
-Ratchet now runs in local mode by default. OAuth login is no longer required
-for normal use.
+Ratchet runs locally by default. OAuth login and provider keys are no longer
+required for normal use.
 
 ## Setup
 
@@ -17,24 +17,23 @@ RATCHET_DIR="${RATCHET_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$
 set -a && . "$RATCHET_DIR/.env" 2>/dev/null && set +a
 ```
 
-## Configure Gemini
+## Show Status
 
 ```bash
-uv run --directory "$RATCHET_DIR" ratchet configure --gemini-api-key <your_key>
+uv run --directory "$RATCHET_DIR" ratchet login
 ```
 
-## Configure OpenAI
+## Optional Host-Agent Generation
 
 ```bash
-uv run --directory "$RATCHET_DIR" ratchet configure --openai-api-key <your_key>
+uv run --directory "$RATCHET_DIR" ratchet configure --llm-mode host-cli --host-agent codex
 ```
 
 ## Verify
 
 ```bash
-grep -E "^(GEMINI_API_KEY|OPENAI_API_KEY)=" "$HOME/.local/ratchet/.env" \
-  | sed -E 's/(=.*).*/=***/'
+uv run --directory "$RATCHET_DIR" ratchet status
 ```
 
-If neither key is configured, `/ratchet:wisdom-gen`, `/ratchet:wisdom-curate`,
-and `/ratchet:status` will stop and ask for local setup first.
+If no host-agent mode is configured, `/ratchet:wisdom-gen` and
+`/ratchet:wisdom-curate` use deterministic local generation.

@@ -9,13 +9,12 @@ import sys
 import uuid
 from pathlib import Path
 
-import httpx
-
 from ratchet.client.api.protocol import (
     ActivePipelinesResult,
     CausalStepFeedbackItem,
     EnhanceSkillResult,
     OutputsResult,
+    PipelineConflictError,
     PipelineStatusResult,
     PipelineStopResult,
     ProfileResult,
@@ -86,13 +85,7 @@ class RatchetLocal:
     ) -> TriggerPipelineResult:
         active_run_id = self.store.find_active_run_for_project(project_id)
         if active_run_id and not force:
-            request = httpx.Request("POST", "http://local/pipeline/run")
-            response = httpx.Response(
-                409,
-                request=request,
-                text=f"Pipeline already running for project {project_id}; run_id={active_run_id}",
-            )
-            raise httpx.HTTPStatusError("Pipeline already running", request=request, response=response)
+            raise PipelineConflictError(project_id=project_id, run_id=active_run_id)
         if active_run_id and force:
             self.stop_pipeline(run_id=active_run_id)
 

@@ -1,30 +1,19 @@
-"""Skill installer for local and remote skill references.
+"""Skill installer for local skill references.
 
-When ``SkillRefItem.url`` is present the installer downloads a ZIP archive.
-When ``url`` is empty but ``path`` points at a local skill source, the
-installer copies that source tree into the installed skills directory.
+The local-only runtime installs from ``SkillRefItem.path``. URL-only references
+are skipped because remote downloads are disabled.
 """
 
 from __future__ import annotations
 
-import io
 import logging
-import os
 import shutil
-import zipfile
 from pathlib import Path
-from urllib.parse import urlparse
-
-import httpx
 
 from ratchet.client.api.protocol import SkillRefItem
 from ratchet.client.dirs import data_dir
 
 logger = logging.getLogger(__name__)
-
-_MAX_DOWNLOAD_SIZE = min(int(os.environ.get("SKILL_MAX_DOWNLOAD_MB", "100")), 500) * 1024 * 1024
-_DOWNLOAD_TIMEOUT = min(int(os.environ.get("SKILL_DOWNLOAD_TIMEOUT", "120")), 300)
-
 
 def skills_dir() -> Path:
     """Skills directory: {data_dir}/skills/."""
@@ -34,7 +23,7 @@ def skills_dir() -> Path:
 
 
 def install_skill(skill: SkillRefItem) -> str:
-    """Install a skill from a local source path or HTTPS ZIP.
+    """Install a skill from a local source path.
 
     Returns: "installed" | "skipped" (no usable source).
     """
@@ -42,9 +31,6 @@ def install_skill(skill: SkillRefItem) -> str:
     dest = (sd / skill.name).resolve()
     if not dest.is_relative_to(sd.resolve()):
         raise ValueError(f"Invalid skill name: {skill.name}")
-
-    if dest.exists():
-        shutil.rmtree(dest)
 
     source_path = Path(skill.path).expanduser() if skill.path else None
     if source_path and source_path.exists():
@@ -54,42 +40,24 @@ def install_skill(skill: SkillRefItem) -> str:
             source_dir = source_path
         if not (source_dir / "SKILL.md").exists():
             raise ValueError(f"Local skill source is missing SKILL.md: {source_dir}")
+        if dest.exists():
+            shutil.rmtree(dest)
         shutil.copytree(source_dir, dest)
         logger.info("Installed local skill %s → %s", skill.name, dest)
         return "installed"
 
-    if not skill.url:
-        return "skipped"
-
-    parsed = urlparse(skill.url)
-    if parsed.scheme != "https":
-        raise ValueError(f"Refusing non-HTTPS URL: {skill.url[:80]}")
-
-    dest.mkdir(parents=True, exist_ok=True)
-
-    resp = httpx.get(skill.url, timeout=_DOWNLOAD_TIMEOUT, follow_redirects=False)
-    resp.raise_for_status()
-    if len(resp.content) > _MAX_DOWNLOAD_SIZE:
-        raise ValueError(f"Skill ZIP exceeds {_MAX_DOWNLOAD_SIZE // 1024 // 1024}MB limit")
-
-    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
-        for info in zf.infolist():
-            target = (dest / info.filename).resolve()
-            if not target.is_relative_to(dest.resolve()):
-                raise ValueError(f"Zip slip detected: {info.filename}")
-        zf.extractall(dest)
-
-    logger.info("Installed skill %s → %s", skill.name, dest)
-    return "installed"
+    if skill.url:
+        logger.warning("Remote skill downloads are disabled; skipping %s", skill.name)
+    return "skipped"
 
 
 def install_skills(skills: list[SkillRefItem]) -> dict[str, str]:
-    """Install all skills from presigned URLs. Returns {name: status}."""
+    """Install all local skill references. Returns {name: status}."""
     results: dict[str, str] = {}
     for skill in skills:
         try:
             results[skill.name] = install_skill(skill)
-        except (OSError, ValueError, httpx.HTTPError, zipfile.BadZipFile) as e:
+        except (OSError, ValueError) as e:
             logger.warning("Failed to install skill %s: %s", skill.name, e)
             results[skill.name] = "failed"
     return results

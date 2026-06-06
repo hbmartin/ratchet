@@ -456,7 +456,7 @@ def test_debug_command_auto_selects_run_writes_json_and_warns_without_provider(
     assert debug_result.returncode == 0, debug_result.stderr
     payload = json.loads(debug_result.stdout)
     assert payload["selected_run"]["run_id"] == failed_run
-    assert payload["auth_warning"]
+    assert payload["auth_warning"] is None
     assert payload["bundle"]["created"] is True
     assert Path(payload["bundle"]["path"]).is_dir()
     assert payload["snapshot"]["status"]["run_id"] == failed_run

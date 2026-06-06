@@ -2,7 +2,7 @@
 # Ratchet SessionStart hook
 #
 # Runs on every Claude session start. Handles:
-#   1. Bootstrap uv package manager if not installed
+#   1. Check for uv package manager
 #   2. Write plugin-root breadcrumb file
 #   3. Initialize profile.json with empty defaults
 #   4. Ensure Python environment is ready (uv sync on first run)
@@ -17,7 +17,7 @@ RATCHET_DIR="${CLAUDE_PLUGIN_ROOT}"
 DATA_DIR="${RATCHET_DATA_DIR:-$HOME/.local/ratchet}"
 HOOK_INPUT="$(cat || true)"
 
-# ── 1. Bootstrap uv if not available ──────────────────────────────────
+# ── 1. Check uv availability ─────────────────────────────────────────
 if ! command -v uv &>/dev/null; then
     # Check common install locations first
     for candidate in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
@@ -29,8 +29,8 @@ if ! command -v uv &>/dev/null; then
 fi
 
 if ! command -v uv &>/dev/null; then
-    curl -LsSf https://astral.sh/uv/install.sh | sh || echo "WARNING: uv install failed — some features may be unavailable"
-    export PATH="$HOME/.local/bin:$PATH"
+    echo "WARNING: uv is required for Ratchet hooks. Install uv locally; skipping Ratchet session bootstrap." >&2
+    exit 0
 fi
 
 # ── 2. Plugin root breadcrumb ─────────────────────────────────────────
@@ -63,28 +63,18 @@ sources:
     enabled: false
     datasets: {}
 llm:
+  mode: deterministic
   generation_order:
-    - agent
-    - ollama
-    - lmstudio
-    - command
-    - gemini
-    - openai
-    - anthropic
+    - deterministic
   embedding_order:
-    - ollama
-    - lmstudio
-    - command
-    - openai
-    - gemini
-    - local-hash
+    - deterministic
   providers: {}
 YAML
 fi
 
-# ── 5. Ensure stable credential store exists ──────────────────────────
-# Credentials live in ~/.local/ratchet/.env. The versioned plugin .env is kept
-# as a non-secret config overlay only.
+# ── 5. Ensure stable settings store exists ────────────────────────────
+# Settings live in ~/.local/ratchet/.env. The versioned plugin .env is kept
+# as a non-secret config overlay.
 if [ ! -f "$DATA_DIR/.env" ]; then
     touch "$DATA_DIR/.env"
     chmod 0600 "$DATA_DIR/.env"

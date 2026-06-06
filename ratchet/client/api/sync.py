@@ -1,8 +1,8 @@
-"""Trajectory sync: upload local sessions to remote server before pipeline run.
+"""Trajectory sync: ingest local sessions before pipeline run.
 
 Maintains a sync-ledger.json per project directory that tracks which sessions
-have been uploaded. Before triggering a remote pipeline run, the caller invokes
-sync_trajectories() to ensure all local sessions are on the server.
+have been ingested. Before triggering a local pipeline run, the caller invokes
+sync_trajectories() to ensure all local sessions are available to the runtime.
 
 Ledger location:
     ~/.local/ratchet/projects/{project_id}/sync-ledger.json
@@ -88,46 +88,46 @@ def _upload_sessions(
     needs_resync: Callable[[str, dict], bool] | None = None,
     extra_entry: Callable[[str], dict] | None = None,
 ) -> int:
-    """Upload sessions not yet in the ledger and persist updated ledger.
+    """Store sessions not yet in the ledger and persist updated ledger.
 
     Args:
         ledger_path: Path to sync-ledger.json.
         ledger_key: Key in the ledger dict ("sessions" or "claude_sessions").
         sessions: List of (session_id, loader_callable) pairs.
-        client: Authenticated client.
-        project_id: Project identifier for the server.
+        client: Ratchet client.
+        project_id: Project identifier.
         label: Label for log messages (e.g. "" or "Claude ").
         needs_resync: Optional callback(session_id, existing_entry) -> bool.
             For sessions already in the ledger, returns True if they should
-            be re-uploaded (e.g. file mtime changed). Default None = never resync.
+            be re-stored (e.g. file mtime changed). Default None = never resync.
         extra_entry: Optional callback(session_id) -> dict of extra fields
             to merge into each ledger entry. Default None = no extra fields.
 
     Returns:
-        Number of newly uploaded sessions.
+        Number of newly stored sessions.
     """
     ledger = _load_ledger(ledger_path)
     synced = ledger.get(ledger_key, {})
 
-    to_upload: list[tuple[str, Callable[[], TurnSet | None]]] = []
+    to_store: list[tuple[str, Callable[[], TurnSet | None]]] = []
     for sid, loader in sessions:
         existing = synced.get(sid)
         if existing is None or (needs_resync is not None and needs_resync(sid, existing)):
-            to_upload.append((sid, loader))
+            to_store.append((sid, loader))
 
-    if not to_upload:
+    if not to_store:
         logger.info("All %d %ssessions already synced", len(synced), label)
         return 0
 
     logger.info(
         "Syncing %d new %ssessions (%d already synced)",
-        len(to_upload),
+        len(to_store),
         label,
         len(synced),
     )
 
-    uploaded = 0
-    for session_id, loader in to_upload:
+    stored = 0
+    for session_id, loader in to_store:
         turn_set = loader()
         if not turn_set or not turn_set.turns:
             logger.debug("Skipping empty %ssession: %s", label, session_id)
@@ -137,26 +137,21 @@ def _upload_sessions(
             turn_set=turn_set,
             project_id=project_id,
         )
-        logger.info("Uploaded %s%s: %s", label, session_id, result.message)
+        logger.info("Stored %s%s: %s", label, session_id, result.message)
 
         entry = {
-            "uploaded_at": datetime.now(UTC).isoformat(),
+            "stored_at": datetime.now(UTC).isoformat(),
             "turn_count": len(turn_set.turns),
         }
         if extra_entry is not None:
             entry.update(extra_entry(session_id))
         ledger.setdefault(ledger_key, {})[session_id] = entry
-        uploaded += 1
+        stored += 1
 
-    # Save updated ledger
-    from ratchet.client.api.remote import RatchetRemote
-
-    if isinstance(client, RatchetRemote):
-        ledger["server_url"] = client.server_url
     _save_ledger(ledger_path, ledger)
 
-    logger.info("%sSync complete: %d new, %d existing", label, uploaded, len(synced))
-    return uploaded
+    logger.info("%sSync complete: %d new, %d existing", label, stored, len(synced))
+    return stored
 
 
 @traced("client.sync_trajectories")
@@ -165,15 +160,15 @@ def sync_trajectories(
     client: RatchetBaseClient,
     project_id: str,
 ) -> int:
-    """Ensure all local sessions are uploaded to the server.
+    """Ensure all local sessions are stored for the pipeline.
 
     Args:
         project_dir: Local ratchet project data folder.
-        client: Authenticated client (typically RatchetRemote).
-        project_id: Project identifier for the server.
+        client: Ratchet client.
+        project_id: Project identifier.
 
     Returns:
-        Number of newly uploaded sessions.
+        Number of newly stored sessions.
     """
     from ratchet.client.history.loader import DataLoader
     from ratchet.client.history.sources.ratchet import RatchetSource
@@ -211,15 +206,15 @@ def sync_claude_trajectories(
     client: RatchetBaseClient,
     project_id: str,
 ) -> int:
-    """Upload matching Claude Code native sessions as trajectories.
+    """Store matching Claude Code native sessions as trajectories.
 
     Args:
         project_dir: Local ratchet project data folder.
-        client: Authenticated client (typically RatchetRemote).
-        project_id: Project identifier for the server.
+        client: Ratchet client.
+        project_id: Project identifier.
 
     Returns:
-        Number of newly uploaded Claude sessions.
+        Number of newly stored Claude sessions.
     """
     from ratchet.client.history.loader import load_sessions_from_project
 

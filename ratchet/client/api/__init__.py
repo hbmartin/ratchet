@@ -1,8 +1,4 @@
-"""Client factory.
-
-The OSS runtime is now always local. Remote mode is retained only as a legacy
-import path for older code, not as the default execution backend.
-"""
+"""Client factory for the local Ratchet runtime."""
 
 from __future__ import annotations
 
@@ -11,12 +7,14 @@ import os
 from typing import TYPE_CHECKING
 
 from ratchet.client.api.protocol import RatchetBaseClient
-from ratchet.client.api.remote import RatchetRemote
 
 if TYPE_CHECKING:
+    from ratchet.client.api.remote import RatchetRemote
     from ratchet.pipeline.local_client import RatchetLocal
 
 logger = logging.getLogger(__name__)
+
+_LEGACY_REMOTE_KWARGS = {"server_url", "api_key", "timeout"}
 
 
 def create_client(mode: str | None = None, **kwargs) -> RatchetBaseClient:
@@ -24,9 +22,8 @@ def create_client(mode: str | None = None, **kwargs) -> RatchetBaseClient:
 
     Args:
         mode: Deprecated. Always uses local mode.
-        **kwargs: Backend-specific arguments.
-            local: backend, model_name, project_id, + create_store kwargs.
-            remote: server_url, api_key, timeout.
+        **kwargs: Local runtime arguments. Deprecated remote arguments
+            (server_url, api_key, timeout) are accepted and ignored.
 
     Returns:
         A RatchetBaseClient implementation.
@@ -34,6 +31,11 @@ def create_client(mode: str | None = None, **kwargs) -> RatchetBaseClient:
 
     if mode and mode != "local":
         logger.warning("Remote mode is deprecated in OSS; using local runtime instead.")
+    ignored = sorted(key for key in kwargs if key in _LEGACY_REMOTE_KWARGS)
+    for key in ignored:
+        kwargs.pop(key, None)
+    if ignored:
+        logger.warning("Ignoring deprecated remote client arguments: %s", ", ".join(ignored))
     from ratchet.pipeline.local_client import RatchetLocal
 
     return RatchetLocal(**kwargs)
@@ -57,3 +59,11 @@ __all__ = [
     "create_client",
     "resolve_mode",
 ]
+
+
+def __getattr__(name: str):
+    if name == "RatchetRemote":
+        from ratchet.client.api.remote import RatchetRemote
+
+        return RatchetRemote
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -1,7 +1,8 @@
-"""Local provider access for embeddings and optional text generation.
+"""Local-only embedding and text generation helpers.
 
-The local runtime is always filesystem-first, but still relies on the user's
-own Gemini or OpenAI key for semantic embeddings and optional summarization.
+Ratchet does not call hosted model providers directly. The default provider is
+deterministic and filesystem-safe. Optional host-agent generation delegates to
+the existing ``ratchet.client.host_llm`` subprocess path.
 """
 
 from __future__ import annotations
@@ -18,15 +19,13 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
-
 from ratchet.client.config import load_config
 
 _EMBED_DIMENSION = 128
 
 
 class LocalLLMError(ValueError):
-    """Raised when no local provider is configured or a provider call fails."""
+    """Raised when a local provider is unavailable or fails."""
 
 
 @dataclass(frozen=True)
@@ -81,11 +80,11 @@ class BaseLocalLLM:
         return ranked[:top_k] if top_k else ranked
 
 
-class FakeLocalLLM(BaseLocalLLM):
-    """Deterministic provider used only in tests."""
+class DeterministicLocalLLM(BaseLocalLLM):
+    """Deterministic provider used by the local runtime."""
 
-    provider = "fake"
-    default_generation_model = "fake-local"
+    provider = "deterministic"
+    default_generation_model = "deterministic-local"
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
@@ -175,7 +174,11 @@ class FakeLocalLLM(BaseLocalLLM):
                 ]
             return json.dumps(
                 {
-                    "summary": f"Cluster {payload.get('cluster_id', 'cluster')} consolidates {len(payload.get('member_session_ids', []))} related sessions into one reusable workflow.",
+                    "summary": (
+                        f"Cluster {payload.get('cluster_id', 'cluster')} consolidates "
+                        f"{len(payload.get('member_session_ids', []))} related sessions into "
+                        "one reusable workflow."
+                    ),
                     "applicability": payload.get("applicability_hints", []),
                     "canonical_workflow": workflow[:6],
                     "verification_loop": verification_loop[:4],
@@ -194,14 +197,24 @@ class FakeLocalLLM(BaseLocalLLM):
         )
 
 
+class FakeLocalLLM(DeterministicLocalLLM):
+    """Backward-compatible test alias for deterministic local behavior."""
+
+    provider = "fake"
+    default_generation_model = "fake-local"
+
+
 class LocalHashEmbeddingLLM(BaseLocalLLM):
-    """Deterministic local embedding fallback used when no embedder is configured."""
+    """Compatibility embedding provider backed by deterministic hashing."""
 
     provider = "local-hash"
     default_generation_model = ""
 
+    def __init__(self) -> None:
+        self._deterministic = DeterministicLocalLLM()
+
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return FakeLocalLLM().embed_documents(texts)
+        return self._deterministic.embed_documents(texts)
 
     def generate_text(self, prompt: str, *, model: str | None = None) -> str:
         raise LocalLLMError("local-hash does not support generation")
@@ -222,6 +235,7 @@ class AgentCLILocalLLM(BaseLocalLLM):
     def generate_text(self, prompt: str, *, model: str | None = None) -> str:
         from ratchet.client.host_llm import complete
 
+        _ = model
         try:
             result = asyncio.run(complete(prompt=prompt, agent=self.agent))
         except RuntimeError as exc:
@@ -231,260 +245,12 @@ class AgentCLILocalLLM(BaseLocalLLM):
         return result.text
 
 
-class GeminiLocalLLM(BaseLocalLLM):
-    """Gemini REST wrapper using the user's own API key."""
-
-    provider = "gemini"
-    default_generation_model = "gemini-2.5-flash"
-    embedding_model = "gemini-embedding-001"
-
-    def __init__(self, api_key: str, timeout: float = 60.0) -> None:
-        self.api_key = api_key
-        self.timeout = timeout
-        self._client = httpx.Client(timeout=timeout)
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        vectors: list[list[float]] = []
-        for text in texts:
-            response = self._client.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{self.embedding_model}:embedContent",
-                headers={
-                    "Content-Type": "application/json",
-                    "x-goog-api-key": self.api_key,
-                },
-                json={
-                    "model": f"models/{self.embedding_model}",
-                    "taskType": "SEMANTIC_SIMILARITY",
-                    "outputDimensionality": _EMBED_DIMENSION,
-                    "content": {"parts": [{"text": text}]},
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
-            embedding = data.get("embedding", {}).get("values", [])
-            if not embedding:
-                raise LocalLLMError("Gemini embeddings response was empty.")
-            vectors.append(_normalize([float(v) for v in embedding]))
-        return vectors
-
-    def generate_text(self, prompt: str, *, model: str | None = None) -> str:
-        response = self._client.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model or self.default_generation_model}:generateContent",
-            headers={
-                "Content-Type": "application/json",
-                "x-goog-api-key": self.api_key,
-            },
-            json={
-                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                "generationConfig": {"temperature": 0.2},
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-        candidates = data.get("candidates", [])
-        if not candidates:
-            raise LocalLLMError("Gemini generation response was empty.")
-        parts = candidates[0].get("content", {}).get("parts", [])
-        return "".join(str(part.get("text", "")) for part in parts).strip()
-
-
-class OpenAILocalLLM(BaseLocalLLM):
-    """OpenAI REST wrapper using the user's own API key."""
-
-    provider = "openai"
-    default_generation_model = "gpt-5-mini"
-    embedding_model = "text-embedding-3-small"
-
-    def __init__(self, api_key: str, timeout: float = 60.0) -> None:
-        self.api_key = api_key
-        self.timeout = timeout
-        self._client = httpx.Client(timeout=timeout)
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        response = self._client.post(
-            "https://api.openai.com/v1/embeddings",
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": self.embedding_model,
-                "input": texts,
-                "dimensions": _EMBED_DIMENSION,
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-        items = data.get("data", [])
-        if not items:
-            raise LocalLLMError("OpenAI embeddings response was empty.")
-        return [_normalize([float(v) for v in item.get("embedding", [])]) for item in items]
-
-    def generate_text(self, prompt: str, *, model: str | None = None) -> str:
-        response = self._client.post(
-            "https://api.openai.com/v1/responses",
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model or self.default_generation_model,
-                "input": prompt,
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-        output = data.get("output", [])
-        chunks: list[str] = []
-        for item in output:
-            for content in item.get("content", []):
-                text = content.get("text")
-                if isinstance(text, str):
-                    chunks.append(text)
-        text_output = "".join(chunks).strip()
-        if not text_output:
-            raise LocalLLMError("OpenAI responses output was empty.")
-        return text_output
-
-
-class AnthropicGenerationLLM(BaseLocalLLM):
-    """Anthropic Messages API wrapper. Generation-only."""
-
-    provider = "anthropic"
-    default_generation_model = "claude-sonnet-4-5"
-
-    def __init__(self, api_key: str, timeout: float = 60.0) -> None:
-        self.api_key = api_key
-        self.timeout = timeout
-        self._client = httpx.Client(timeout=timeout)
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        raise LocalLLMError("Anthropic does not provide embeddings in this runtime")
-
-    def generate_text(self, prompt: str, *, model: str | None = None) -> str:
-        response = self._client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model or self.default_generation_model,
-                "max_tokens": 4096,
-                "temperature": 0.2,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-        chunks = [
-            item.get("text", "")
-            for item in data.get("content", [])
-            if isinstance(item, dict) and item.get("type") == "text"
-        ]
-        text_output = "".join(chunks).strip()
-        if not text_output:
-            raise LocalLLMError("Anthropic messages output was empty.")
-        return text_output
-
-
-class OllamaLocalLLM(BaseLocalLLM):
-    """Ollama local generation and embedding adapter."""
-
-    provider = "ollama"
-
-    def __init__(
-        self,
-        base_url: str = "http://localhost:11434",
-        generation_model: str = "llama3.1",
-        embedding_model: str = "nomic-embed-text",
-        timeout: float = 60.0,
-    ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.default_generation_model = generation_model
-        self.embedding_model = embedding_model
-        self._client = httpx.Client(timeout=timeout)
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        vectors: list[list[float]] = []
-        for text in texts:
-            response = self._client.post(
-                f"{self.base_url}/api/embeddings",
-                json={"model": self.embedding_model, "prompt": text},
-            )
-            response.raise_for_status()
-            embedding = response.json().get("embedding", [])
-            if not embedding:
-                raise LocalLLMError("Ollama embedding response was empty.")
-            vectors.append(_normalize([float(v) for v in embedding[:_EMBED_DIMENSION]]))
-        return vectors
-
-    def generate_text(self, prompt: str, *, model: str | None = None) -> str:
-        response = self._client.post(
-            f"{self.base_url}/api/generate",
-            json={"model": model or self.default_generation_model, "prompt": prompt, "stream": False},
-        )
-        response.raise_for_status()
-        text_output = str(response.json().get("response", "")).strip()
-        if not text_output:
-            raise LocalLLMError("Ollama generation response was empty.")
-        return text_output
-
-
-class OpenAICompatibleLocalLLM(BaseLocalLLM):
-    """OpenAI-compatible local endpoint adapter, e.g. LM Studio."""
-
-    provider = "openai-compatible"
-
-    def __init__(
-        self,
-        base_url: str,
-        api_key: str = "local",
-        generation_model: str = "local-model",
-        embedding_model: str = "text-embedding-local",
-        timeout: float = 60.0,
-    ) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
-        self.default_generation_model = generation_model
-        self.embedding_model = embedding_model
-        self._client = httpx.Client(timeout=timeout)
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        response = self._client.post(
-            f"{self.base_url}/v1/embeddings",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json={"model": self.embedding_model, "input": texts},
-        )
-        response.raise_for_status()
-        items = response.json().get("data", [])
-        if not items:
-            raise LocalLLMError("OpenAI-compatible embeddings response was empty.")
-        return [_normalize([float(v) for v in item.get("embedding", [])]) for item in items]
-
-    def generate_text(self, prompt: str, *, model: str | None = None) -> str:
-        response = self._client.post(
-            f"{self.base_url}/v1/chat/completions",
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json={
-                "model": model or self.default_generation_model,
-                "temperature": 0.2,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-        )
-        response.raise_for_status()
-        choices = response.json().get("choices", [])
-        if not choices:
-            raise LocalLLMError("OpenAI-compatible generation response was empty.")
-        return str(choices[0].get("message", {}).get("content", "")).strip()
-
-
 class CommandAdapterLLM(BaseLocalLLM):
-    """Custom command adapter.
+    """Custom local command adapter.
 
-    Generation command receives the prompt on stdin and returns text on stdout.
-    Embedding command receives JSON ``{"texts": [...]}`` and returns ``[[...]]``.
+    The generation command receives the prompt on stdin and returns text on
+    stdout. The embedding command receives JSON ``{"texts": [...]}`` and
+    returns ``[[...]]``.
     """
 
     provider = "command"
@@ -523,6 +289,7 @@ class CommandAdapterLLM(BaseLocalLLM):
     def generate_text(self, prompt: str, *, model: str | None = None) -> str:
         if not self.generation_command:
             raise LocalLLMError("No command generation adapter configured.")
+        _ = model
         proc = subprocess.run(
             self.generation_command,
             input=prompt,
@@ -541,7 +308,7 @@ class CommandAdapterLLM(BaseLocalLLM):
 
 
 class RouterLLM(BaseLocalLLM):
-    """Operation-aware provider router."""
+    """Operation-aware local provider router."""
 
     provider = "router"
     default_generation_model = "router"
@@ -626,6 +393,9 @@ def _load_runtime_config() -> dict[str, Any]:
 
 
 def _running_agent_order() -> list[str]:
+    configured = os.environ.get("RATCHETAI_HOST_AGENT") or os.environ.get("RATCHET_HOST_AGENT")
+    if configured:
+        return [configured]
     if any(os.environ.get(key) for key in ("CODEX_SHELL", "CODEX_THREAD_ID", "CODEX_HOME")):
         return ["codex", "claude"]
     if any(os.environ.get(key) for key in ("CLAUDE_SESSION_ID", "CLAUDE_PROJECT_DIR", "CLAUDE_PLUGIN_ROOT")):
@@ -641,35 +411,31 @@ def _provider_order(config: dict[str, Any], key: str, default: list[str]) -> lis
     return default
 
 
+def _llm_mode(config: dict[str, Any]) -> str:
+    llm_config = config.get("llm", {}) if isinstance(config.get("llm", {}), dict) else {}
+    raw_mode = (
+        os.environ.get("RATCHETAI_LLM_MODE")
+        or os.environ.get("RATCHET_LLM_MODE")
+        or llm_config.get("mode")
+        or "deterministic"
+    )
+    mode = str(raw_mode).strip().lower()
+    if mode in {"host", "host_cli", "agent", "agent-cli"}:
+        return "host-cli"
+    if mode in {"command", "deterministic", "host-cli"}:
+        return mode
+    return "deterministic"
+
+
 def _build_provider(name: str, config: dict[str, Any]) -> BaseLocalLLM | None:
     llm_config = config.get("llm", {}) if isinstance(config.get("llm", {}), dict) else {}
     providers = llm_config.get("providers", {}) if isinstance(llm_config.get("providers", {}), dict) else {}
     provider_cfg = providers.get(name, {}) if isinstance(providers.get(name, {}), dict) else {}
 
+    if name in {"deterministic", "fake"}:
+        return DeterministicLocalLLM()
     if name == "local-hash":
         return LocalHashEmbeddingLLM()
-    if name == "gemini" and (api_key := os.environ.get("GEMINI_API_KEY")):
-        return GeminiLocalLLM(api_key)
-    if name == "openai" and (api_key := os.environ.get("OPENAI_API_KEY")):
-        return OpenAILocalLLM(api_key)
-    if name == "anthropic" and (api_key := os.environ.get("ANTHROPIC_API_KEY")):
-        return AnthropicGenerationLLM(api_key)
-    if name == "ollama":
-        if provider_cfg.get("enabled") or os.environ.get("OLLAMA_HOST"):
-            return OllamaLocalLLM(
-                base_url=str(provider_cfg.get("base_url") or os.environ.get("OLLAMA_HOST") or "http://localhost:11434"),
-                generation_model=str(provider_cfg.get("generation_model") or "llama3.1"),
-                embedding_model=str(provider_cfg.get("embedding_model") or "nomic-embed-text"),
-            )
-    if name in {"lmstudio", "openai-compatible"}:
-        base_url = provider_cfg.get("base_url") or os.environ.get("RATCHET_OPENAI_COMPAT_BASE_URL")
-        if base_url:
-            return OpenAICompatibleLocalLLM(
-                base_url=str(base_url),
-                api_key=str(provider_cfg.get("api_key") or os.environ.get("RATCHET_OPENAI_COMPAT_API_KEY") or "local"),
-                generation_model=str(provider_cfg.get("generation_model") or "local-model"),
-                embedding_model=str(provider_cfg.get("embedding_model") or "text-embedding-local"),
-            )
     if name == "command":
         generation_command = provider_cfg.get("generation_command") or os.environ.get("RATCHET_GENERATION_COMMAND")
         embedding_command = provider_cfg.get("embedding_command") or os.environ.get("RATCHET_EMBEDDING_COMMAND")
@@ -690,34 +456,33 @@ def _build_provider(name: str, config: dict[str, Any]) -> BaseLocalLLM | None:
 
 
 def create_llm_client() -> BaseLocalLLM:
-    """Resolve the local provider from environment variables."""
+    """Resolve a local provider from configuration and environment."""
     if os.environ.get("RATCHET_TEST_FAKE_LLM") == "1":
         return FakeLocalLLM()
 
     config = _load_runtime_config()
-    agent_order = [f"agent:{agent}" for agent in _running_agent_order()]
-    generation_order = _provider_order(
-        config,
-        "generation_order",
-        [*agent_order, "ollama", "lmstudio", "command", "gemini", "openai", "anthropic"],
-    )
-    embedding_order = _provider_order(
-        config,
-        "embedding_order",
-        ["ollama", "lmstudio", "command", "openai", "gemini", "local-hash"],
-    )
+    mode = _llm_mode(config)
+    if mode == "host-cli":
+        agent_order = [f"agent:{agent}" for agent in _running_agent_order()]
+        generation_order = [*agent_order, "deterministic"]
+        embedding_order = ["deterministic"]
+    elif mode == "command":
+        generation_order = _provider_order(config, "generation_order", ["command", "deterministic"])
+        embedding_order = _provider_order(config, "embedding_order", ["command", "deterministic"])
+    else:
+        generation_order = ["deterministic"]
+        embedding_order = ["deterministic"]
+
     generation_providers = [
         provider for name in generation_order if (provider := _build_provider(name, config))
     ]
     embedding_providers = [
         provider for name in embedding_order if (provider := _build_provider(name, config))
     ]
-    if not embedding_providers:
-        embedding_providers = [LocalHashEmbeddingLLM()]
     if not generation_providers:
-        raise LocalLLMError(
-            "No generation provider configured. Install Claude/Codex CLI or set a local/API provider."
-        )
+        generation_providers = [DeterministicLocalLLM()]
+    if not embedding_providers:
+        embedding_providers = [DeterministicLocalLLM()]
     return RouterLLM(
         generation_providers=generation_providers,
         embedding_providers=embedding_providers,

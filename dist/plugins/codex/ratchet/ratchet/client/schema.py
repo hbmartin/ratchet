@@ -1,8 +1,7 @@
 """Schema definitions for Ratchet data collection (client edition).
 
-Client-side version with no LLM dependencies.
-estimate_cost() returns 0.0 — cost computation is handled server-side.
-A server-side installation may override this function with accurate pricing.
+Local version with no LLM dependencies.
+estimate_cost() returns 0.0 because the local runtime does not price sessions.
 """
 
 from __future__ import annotations
@@ -213,14 +212,11 @@ class SessionStats:
 
 
 def estimate_cost(tokens: SessionTokens, model: str | None = None) -> float:
-    """Return 0.0 — client does not compute cost.
-
-    Server computes accurate cost on upload.
-    A server-side installation may override this function with litellm-based pricing.
+    """Return 0.0 because the local runtime does not compute provider cost.
 
     Args:
         tokens: Token usage counts for the session.
-        model: Model identifier (unused in client — kept for API compatibility).
+        model: Model identifier (unused; kept for compatibility).
 
     Returns:
         0.0 always.

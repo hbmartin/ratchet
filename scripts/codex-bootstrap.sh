@@ -17,8 +17,8 @@ if ! command -v uv &>/dev/null; then
 fi
 
 if ! command -v uv &>/dev/null; then
-    curl -LsSf https://astral.sh/uv/install.sh | sh || echo "WARNING: uv install failed — some features may be unavailable"
-    export PATH="$HOME/.local/bin:$PATH"
+    echo "WARNING: uv is required for Ratchet hooks. Install uv locally; skipping Ratchet session bootstrap." >&2
+    exit 0
 fi
 
 mkdir -p "$DATA_DIR"
@@ -47,21 +47,11 @@ sources:
     enabled: false
     datasets: {}
 llm:
+  mode: deterministic
   generation_order:
-    - agent
-    - ollama
-    - lmstudio
-    - command
-    - gemini
-    - openai
-    - anthropic
+    - deterministic
   embedding_order:
-    - ollama
-    - lmstudio
-    - command
-    - openai
-    - gemini
-    - local-hash
+    - deterministic
   providers: {}
 YAML
 fi

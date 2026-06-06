@@ -27,7 +27,7 @@ set -a && . "$RATCHET_DIR/.env" 2>/dev/null && set +a
 uv run --directory "$RATCHET_DIR" python -m ratchet.client.check_auth
 ```
 
-If the auth check fails (non-zero exit), show the output to the user and stop.
+If the local readiness check fails (non-zero exit), show the output to the user and stop.
 
 All commands below assume `RATCHET_DIR` is set.
 
@@ -66,15 +66,17 @@ Tell the user the log path so they can monitor with `tail -f` or check after com
 The background worker also writes a durable run log under the run directory:
 `~/.local/ratchet/runs/{project_id}/{run_id}/worker.log`.
 
-## Model Options
+## Generation Mode
 
-| Alias | Provider |
-|-------|----------|
-| `gemini-2.5-flash` | Google |
-| `gpt-5-mini` | OpenAI |
+By default, the local runtime uses deterministic local embeddings and structured
+heuristics. To delegate generation to the current host agent CLI, configure:
 
-When omitted, the local runtime prefers Gemini when `GEMINI_API_KEY` is set,
-otherwise OpenAI when `OPENAI_API_KEY` is set.
+```bash
+uv run --directory "$RATCHET_DIR" ratchet configure --llm-mode host-cli --host-agent codex
+```
+
+The `--model` flag is accepted for compatibility, but deterministic local mode
+does not require a model alias.
 
 ## Pipeline Outputs
 

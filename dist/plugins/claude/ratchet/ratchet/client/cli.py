@@ -4,8 +4,8 @@ Ratchet CLI - Manage the Ratchet plugin runtime for Claude and Codex.
 
 Usage:
     ratchet status
-    ratchet configure [--user-id <id>] [--api-key <key>] [--server-url <url>]
-    ratchet login [--provider github|google]
+    ratchet configure [--llm-mode deterministic|host-cli] [--host-agent claude|codex]
+    ratchet login
     ratchet profile [--language <lang>] [--level <level>] [--style <style>]
 
 Installation is handled via host plugin packages.
@@ -57,7 +57,7 @@ def _get_plugin_root() -> Path | None:
 
 
 def get_env_path() -> Path:
-    """Get the path to the stable .env credential file."""
+    """Get the path to the stable .env settings file."""
     return get_data_dir() / ".env"
 
 
@@ -75,7 +75,12 @@ def load_env_file(env_path: Path) -> dict[str, str]:
     return {k: v for k, v in dotenv_values(env_path).items() if v is not None}
 
 
-def save_env_file(env_path: Path, env_vars: dict[str, str]) -> None:
+def save_env_file(
+    env_path: Path,
+    env_vars: dict[str, str],
+    *,
+    remove_absent: bool = False,
+) -> None:
     """Save environment variables to .env file."""
     existing_lines = []
     existing_keys = set()
@@ -89,7 +94,7 @@ def save_env_file(env_path: Path, env_vars: dict[str, str]) -> None:
                     if key in env_vars:
                         existing_lines.append(f"{key}={env_vars[key]}\n")
                         existing_keys.add(key)
-                    else:
+                    elif not remove_absent:
                         existing_lines.append(line)
                 else:
                     existing_lines.append(line)
@@ -109,7 +114,7 @@ def save_env_file(env_path: Path, env_vars: dict[str, str]) -> None:
 
 
 def _load_env() -> None:
-    """Load .env credentials into os.environ (setdefault, won't override)."""
+    """Load .env settings into os.environ (setdefault, won't override)."""
     for key, value in load_env_file(get_env_path()).items():
         os.environ.setdefault(key, value)
 
@@ -169,10 +174,7 @@ def _local_store():
 
 
 def _provider_auth_warning() -> str | None:
-    _load_env()
-    if os.environ.get("GEMINI_API_KEY") or os.environ.get("OPENAI_API_KEY"):
-        return None
-    return "No local model provider configured. Continuing with local debug evidence only."
+    return None
 
 
 def _debug_snapshot(store, run_id: str) -> dict:
@@ -412,8 +414,9 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     print("\nLocal Runtime:")
     print("   Client Mode: local")
-    print(f"   Gemini Key: {'configured' if env_vars.get('GEMINI_API_KEY') else 'not set'}")
-    print(f"   OpenAI Key: {'configured' if env_vars.get('OPENAI_API_KEY') else 'not set'}")
+    print(f"   LLM Mode: {env_vars.get('RATCHET_LLM_MODE') or 'deterministic'}")
+    print(f"   Host Agent: {env_vars.get('RATCHET_HOST_AGENT') or 'auto'}")
+    print("   Credentials: not required")
 
     # Check Python environment
     if plugin_root:
@@ -455,35 +458,72 @@ def cmd_configure(args: argparse.Namespace) -> int:
 
     env_vars = load_env_file(env_path)
     updated = []
+    ignored = []
+    removed = []
 
-    # (arg_name, env_var_key, is_secret)
+    legacy_keys = {
+        "RATCHET_API_KEY",
+        "RATCHET_CLIENT_MODE",
+        "RATCHET_SERVER_URL",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "RATCHET_OPENAI_COMPAT_API_KEY",
+    }
+    for key in sorted(legacy_keys):
+        if key in env_vars:
+            env_vars.pop(key, None)
+            removed.append(key)
+
+    for attr in (
+        "user_id",
+        "api_key",
+        "server_url",
+        "client_mode",
+        "openai_api_key",
+        "gemini_api_key",
+    ):
+        value = getattr(args, attr, None)
+        if value:
+            ignored.append(attr.replace("_", "-"))
+
     _CONFIG_FIELDS = [
-        ("client_mode", "RATCHET_CLIENT_MODE", False),
-        ("openai_api_key", "OPENAI_API_KEY", True),
-        ("gemini_api_key", "GEMINI_API_KEY", True),
+        ("llm_mode", "RATCHET_LLM_MODE"),
+        ("host_agent", "RATCHET_HOST_AGENT"),
     ]
 
-    for attr, env_key, is_secret in _CONFIG_FIELDS:
+    for attr, env_key in _CONFIG_FIELDS:
         value = getattr(args, attr, None)
         if value:
             env_vars[env_key] = value
-            updated.append(f"{env_key}={'***' if is_secret else value}")
+            updated.append(f"{env_key}={value}")
 
-    if not updated:
+    if not updated and not ignored and not removed:
         print("\nCurrent configuration:")
         for key, value in env_vars.items():
             if "TOKEN" in key or "KEY" in key:
                 print(f"   {key}=***")
             else:
                 print(f"   {key}={value}")
-        print("\nUse --api-key, --server-url, --client-mode, etc. to update values")
+        print("\nUse --llm-mode and --host-agent to update local runtime values")
         return 0
 
-    save_env_file(env_path, env_vars)
+    save_env_file(env_path, env_vars, remove_absent=True)
 
+    if ignored:
+        print("\nDeprecated remote/provider options ignored:")
+        for item in ignored:
+            print(f"   --{item}")
+    if removed:
+        print("\nRemoved stale remote/provider settings:")
+        for item in removed:
+            print(f"   {item}")
     print("\nConfiguration updated:")
-    for item in updated:
-        print(f"   {item}")
+    if updated:
+        for item in updated:
+            print(f"   {item}")
+    else:
+        print("   local runtime is ready")
 
     return 0
 
@@ -491,15 +531,12 @@ def cmd_configure(args: argparse.Namespace) -> int:
 def cmd_login(args: argparse.Namespace) -> int:
     """Legacy login shim.
 
-    Local mode no longer uses Ratchet OAuth. Keep the command so existing
-    skills and muscle memory do not crash, but point users at local setup.
+    Local mode no longer uses OAuth. Keep the command so existing skills and
+    muscle memory do not crash, but point users at local setup.
     """
-    _ = args
-    print("Login is deprecated in local mode.")
-    print("Configure a provider key instead:")
-    print("  ratchet configure --gemini-api-key <key>")
-    print("  ratchet configure --openai-api-key <key>")
-    return 0
+    from ratchet.client.login import run_login
+
+    return run_login(provider=args.provider or "local")
 
 
 def cmd_profile(args: argparse.Namespace) -> int:
@@ -512,16 +549,11 @@ def cmd_profile(args: argparse.Namespace) -> int:
 
     # Reset
     if args.reset:
-        # Clear local file
         profile_path = get_profile_path()
         profile_existed = profile_path.exists()
         if profile_existed:
             profile_path.unlink()
-        # Sync to remote server only — local mode handles reset via file deletion above
-        from ratchet.client.api.remote import RatchetRemote
-
-        if isinstance(client, RatchetRemote):
-            client.save_profile(profile=UserProfile())
+        client.save_profile(profile=UserProfile())
         if profile_existed:
             print("Profile reset.")
         else:
@@ -531,7 +563,7 @@ def cmd_profile(args: argparse.Namespace) -> int:
     has_updates = any(x is not None for x in [args.language, args.level, args.style])
 
     if not has_updates:
-        # Show current profile via client (remote mode reads from ratchet-service DB)
+        # Show current profile via client.
         user_profile = client.load_profile()
         if all(v is None for v in [user_profile.language, user_profile.level, user_profile.style]):
             print("No profile set.")
@@ -861,29 +893,38 @@ def main():
 
     # Configure command
     configure_parser = subparsers.add_parser("configure", help="Configure ratchet settings")
-    configure_parser.add_argument("--user-id", "-u", type=str, help="Set your user identifier")
-    configure_parser.add_argument("--api-key", "-k", type=str, help="Set Ratchet API key")
+    configure_parser.add_argument(
+        "--llm-mode",
+        choices=["deterministic", "host-cli"],
+        help="Set local generation mode",
+    )
+    configure_parser.add_argument(
+        "--host-agent",
+        choices=["claude", "codex"],
+        help="Host-agent CLI to use when --llm-mode host-cli is selected",
+    )
+    configure_parser.add_argument("--user-id", "-u", type=str, help=argparse.SUPPRESS)
+    configure_parser.add_argument("--api-key", "-k", type=str, help=argparse.SUPPRESS)
     configure_parser.add_argument(
         "--server-url",
         type=str,
-        help="Set Ratchet server URL (e.g. http://localhost:8000)",
+        help=argparse.SUPPRESS,
     )
     configure_parser.add_argument(
         "--client-mode",
         type=str,
         choices=["local", "remote"],
-        help="Set client mode (local or remote)",
+        help=argparse.SUPPRESS,
     )
-    configure_parser.add_argument("--openai-api-key", type=str, help="Set OpenAI API key")
-    configure_parser.add_argument("--gemini-api-key", type=str, help="Set Gemini API key")
+    configure_parser.add_argument("--openai-api-key", type=str, help=argparse.SUPPRESS)
+    configure_parser.add_argument("--gemini-api-key", type=str, help=argparse.SUPPRESS)
 
     # Login command (default provider imported from login module)
-    login_parser = subparsers.add_parser("login", help="Sign in via OAuth to get an API key")
+    login_parser = subparsers.add_parser("login", help="Show local setup status")
     login_parser.add_argument(
         "--provider",
-        choices=["github", "google"],
         default=None,  # defers to login.run_login default
-        help="OAuth provider (default: google)",
+        help=argparse.SUPPRESS,
     )
 
     # Profile command

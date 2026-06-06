@@ -37,8 +37,8 @@ Knowledge is stored in the **Wisdom Graph DB**, a structured graph that maps rel
 ### Prerequisites
 
 - Claude or Codex installed and working
-- At least one generation path: current agent CLI, Ollama, LM Studio/OpenAI-compatible endpoint, custom command adapter, Gemini, OpenAI, or Anthropic
-- Optional embedding path: local embedder/ranker preferred, API embedder by config, or agent reranking fallback
+- `uv` installed locally
+- No Ratchet service account, OAuth login, or provider key is required
 
 ### 1. Install the plugin
 
@@ -57,19 +57,21 @@ codex plugin marketplace add dist/plugins/codex
 
 Then install `ratchet` from the `ratchet-local` marketplace in Codex.
 
-### 2. Configure providers
+### 2. Configure local runtime
 
-Secrets live in `~/.local/ratchet/.env`; non-secret routing and source settings live in `~/.local/ratchet/config.yaml`.
+Settings live in `~/.local/ratchet/.env`; non-secret routing and source settings live in `~/.local/ratchet/config.yaml`.
 
-API provider examples:
+The default mode is deterministic local embeddings and structured heuristic generation:
 
 ```bash
-ratchet configure --gemini-api-key <YOUR_KEY>
-# or
-ratchet configure --openai-api-key <YOUR_KEY>
+ratchet configure --llm-mode deterministic
 ```
 
-Local adapters are configured in `config.yaml` under `llm.providers`. Generation defaults to the current agent CLI first, then configured local/API providers in order.
+Optional host-agent generation delegates through the local Claude or Codex CLI:
+
+```bash
+ratchet configure --llm-mode host-cli --host-agent codex
+```
 
 ### 3. Use it in any project
 
@@ -193,7 +195,7 @@ metadata:
   version: "1.0.0"
   generated_at: "2026-03-26T05:22:58Z"
   roi:
-    model: gemini-3-flash
+    model: deterministic-local
     performance_increase: "75%"
     token_savings: "83%"
 ---

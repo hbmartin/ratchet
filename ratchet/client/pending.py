@@ -1,13 +1,13 @@
 """Pending skills, strategies, and lessons management for client-side operations.
 
 This module handles local file operations for pending pipeline outputs:
-- Save pipeline outputs (from both local and remote runs) to pending folders
+- Save local pipeline outputs to pending folders
 - Scan pending directories for review
 - Clear and delete pending items
 - Format review notifications for Claude Code
 
 Pending data is user-generated content stored at user level, consistent across
-both local and remote installation modes.
+local installation mode.
 
 Directories (under data_dir()/data/):
 - pending-skills/{name}/ - for skills (SKILL.md + metadata)
@@ -27,7 +27,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import httpx
 import yaml
 
 from ratchet.client.api.protocol import TERMINAL_STATUSES
@@ -201,9 +200,8 @@ def save_outputs_to_pending(
 ) -> PendingResult:
     """Save pipeline outputs to local pending folders.
 
-    Works for both local and remote pipeline results. Takes a
-    PipelineStatusResult and writes pending skills/strategies to
-    the standard pending directories.
+    Takes a PipelineStatusResult and writes pending skills/strategies to the
+    standard pending directories.
 
     Args:
         status: PipelineStatusResult with outputs.
@@ -605,9 +603,8 @@ async def poll_pipeline_status(
 ) -> PipelineStatusResult:
     """Poll client.get_pipeline_status() until completed/failed or timeout.
 
-    For RatchetLocal: returns immediately (status is already 'completed').
-    For RatchetRemote: polls server every poll_interval seconds with retry
-    on transient HTTP errors (502/503/504) and network failures.
+    ``max_retries`` is retained for backward compatibility with older callers;
+    there are no remote HTTP retries in the local-only runtime.
 
     Args:
         client: RatchetBaseClient implementation.
@@ -615,58 +612,20 @@ async def poll_pipeline_status(
         poll_interval: Seconds between polls (default: 10s).
         timeout: Maximum seconds to wait. None means wait indefinitely
             until the pipeline completes or fails (default: 1200s = 20 min).
-        max_retries: Max consecutive retries on transient errors before
-            raising. Uses exponential backoff capped at 120s (default: 5).
+        max_retries: Deprecated compatibility argument.
 
     Returns:
         PipelineStatusResult with final status.
 
     Raises:
         TimeoutError: If pipeline doesn't finish within timeout (when set).
-        httpx.HTTPStatusError: On non-retryable HTTP errors or after
-            max_retries consecutive transient errors.
-        httpx.NetworkError: After max_retries consecutive network failures.
     """
     start = time.monotonic()
     last_phase = ""
-    consecutive_errors = 0
-
-    def _retry_wait(label: str) -> float | None:
-        """Increment error counter, log warning, return wait seconds or None if budget exhausted."""
-        nonlocal consecutive_errors
-        if consecutive_errors >= max_retries:
-            return None
-        consecutive_errors += 1
-        wait = min(poll_interval * (2**consecutive_errors), 120.0)
-        logger.warning(
-            "  %s (attempt %d/%d), retrying in %.0fs...",
-            label,
-            consecutive_errors,
-            max_retries,
-            wait,
-        )
-        return wait
+    _ = max_retries
 
     while True:
-        try:
-            status = await asyncio.to_thread(client.get_pipeline_status, run_id=run_id)
-            consecutive_errors = 0  # reset on success
-
-        except httpx.HTTPStatusError as exc:
-            code = exc.response.status_code
-            if code in (502, 503, 504):
-                wait = _retry_wait(f"Status poll got HTTP {code}")
-                if wait is not None:
-                    await asyncio.sleep(wait)
-                    continue
-            raise  # non-retryable status or max retries exhausted
-
-        except (httpx.NetworkError, httpx.TimeoutException) as exc:
-            wait = _retry_wait(f"Network error ({type(exc).__name__})")
-            if wait is not None:
-                await asyncio.sleep(wait)
-                continue
-            raise
+        status = await asyncio.to_thread(client.get_pipeline_status, run_id=run_id)
 
         if status.status in TERMINAL_STATUSES:
             return status

@@ -27,8 +27,7 @@ fi
 ```
 
 `ratchet debug` auto-selects a run when no run id is supplied. It prefers the
-newest failed or stale active run, otherwise the newest recent run. It warns but
-continues if no local model provider key is configured because local debug
+newest failed or stale active run, otherwise the newest recent run. Local debug
 evidence does not require provider auth.
 
 The command prints run evidence and writes a raw local bundle directory. Use the
