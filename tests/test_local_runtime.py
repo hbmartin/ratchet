@@ -4,16 +4,30 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import time
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
-from mega_code.client.api import create_client
-from mega_code.client.api.protocol import OutputsResult
-from mega_code.client.models import SessionMetadata, Turn, TurnSet
-from mega_code.client.skill_installer import get_skill_path, install_skill
-from mega_code.pipeline import runtime as local_runtime
-from mega_code.pipeline.store import LocalStore
+import pytest
+
+from ratchet.client.api import create_client
+from ratchet.client.api.protocol import OutputsResult
+from ratchet.client.models import SessionMetadata, Turn, TurnSet
+from ratchet.client.skill_installer import get_skill_path, install_skill
+from ratchet.pipeline import runtime as local_runtime
+from ratchet.pipeline.llm import FakeLocalLLM
+from ratchet.pipeline.store import LocalStore
+from tests.helpers import run_subprocess
+
+
+class _BadJSONLLM:
+    def generate_text(self, _prompt: str) -> str:
+        return "{not valid json"
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [[1.0] for _text in texts]
 
 
 def _make_turnset(
@@ -102,6 +116,82 @@ def _create_run(
     return run_id
 
 
+def test_project_fingerprint_ignores_malformed_package_json(tmp_path):
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    (project_root / "package.json").write_text("{not json", encoding="utf-8")
+
+    fingerprint = local_runtime._inspect_project_fingerprint(str(project_root))
+
+    assert fingerprint["language"] == "javascript"
+    assert fingerprint["package_manager"] == "npm"
+
+
+def test_project_fingerprint_ignores_non_object_package_json(tmp_path):
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    (project_root / "package.json").write_text('["react"]', encoding="utf-8")
+
+    fingerprint = local_runtime._inspect_project_fingerprint(str(project_root))
+
+    assert fingerprint["frameworks"] == []
+
+
+def test_llm_json_parser_repairs_trailing_commas():
+    parsed = local_runtime._parse_llm_json(
+        """
+        {
+          "proposals": [
+            {
+              "target": "canonical_workflow",
+              "title": "Run tests",
+              "rule": "Run tests before finishing.",
+              "applicability": "Python projects.",
+            },
+          ],
+        }
+        """,
+        "TEST",
+        local_runtime._AnalystPass,
+    )
+
+    assert parsed.proposals[0].title == "Run tests"
+
+
+def test_analyst_pass_raises_on_bad_json():
+    cluster = local_runtime.TraceCluster(
+        cluster_id="cluster-1",
+        skill_name="auth-flow",
+        strategy_name="auth-flow-strategy",
+        traces=[
+            SimpleNamespace(
+                turn_set=SimpleNamespace(session_id="session-1"),
+                keywords=["auth"],
+            )
+        ],
+    )
+    candidates = [
+        {
+            "target": "canonical_workflow",
+            "title": "Inspect auth flow",
+            "rule": "Inspect auth flow before editing.",
+            "applicability": "Auth projects.",
+            "evidence_session_ids": ["session-1"],
+            "support_count": 1,
+            "examples": ["auth evidence"],
+            "kind": "analysis",
+        }
+    ]
+
+    with pytest.raises(ValueError, match="SUCCESS_ANALYST returned invalid JSON"):
+        local_runtime._run_analyst_pass(
+            llm=_BadJSONLLM(),
+            marker="SUCCESS_ANALYST",
+            cluster=cluster,
+            candidates=candidates,
+        )
+
+
 def _wait_for_completion(run_id: str, timeout: float = 15.0):
     client = create_client()
     deadline = time.time() + timeout
@@ -114,14 +204,14 @@ def _wait_for_completion(run_id: str, timeout: float = 15.0):
 
 
 def test_create_client_returns_local_runtime(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
     client = create_client()
-    assert type(client).__name__ == "MegaCodeLocal"
+    assert type(client).__name__ == "RatchetLocal"
 
 
 def test_local_pipeline_ingest_lifecycle_and_feedback(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_TEST_FAKE_LLM", "1")
     project_root = tmp_path / "repo"
     project_root.mkdir()
     session_id = str(uuid.uuid4())
@@ -148,6 +238,17 @@ def test_local_pipeline_ingest_lifecycle_and_feedback(tmp_path, monkeypatch):
     assert status.outputs is not None
     assert status.outputs.pending_skills
     assert status.outputs.pending_strategies
+    assert status.run_dir
+    assert status.log_path
+    assert status.events_path
+    assert status.last_heartbeat_at
+    assert status.heartbeat_count > 0
+    assert status.trace_id
+    assert Path(status.run_dir).is_dir()
+    assert Path(status.log_path).is_file()
+    assert Path(status.events_path).is_file()
+    worker_log = Path(status.log_path).read_text(encoding="utf-8", errors="replace")
+    assert "Local pipeline worker starting" in worker_log
 
     outputs = fresh_client.get_outputs(project_id="proj-local", run_id=trigger.run_id)
     assert isinstance(outputs, OutputsResult)
@@ -166,6 +267,32 @@ def test_local_pipeline_ingest_lifecycle_and_feedback(tmp_path, monkeypatch):
     assert any(item["postconditions"] for item in operators)
     assert any(item["slots"] for item in operators)
     assert all(item["env_fingerprint"] for item in operators)
+    events = store.list_pipeline_events(trigger.run_id)
+    event_types = [event["event_type"] for event in events]
+    assert "worker_started" in event_types
+    assert "runtime_started" in event_types
+    assert "runtime_completed" in event_types
+    assert "worker_completed" in event_types
+    jsonl_events = [
+        json.loads(line)
+        for line in Path(status.events_path).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    jsonl_event_types = [event["event_type"] for event in jsonl_events]
+    assert len(jsonl_event_types) == len(event_types)
+    assert set(jsonl_event_types) == set(event_types)
+    llm_calls = store.list_pipeline_llm_calls(trigger.run_id)
+    assert llm_calls
+    assert any(call["call_type"] == "generation" for call in llm_calls)
+    assert any(call["call_type"] == "embedding" for call in llm_calls)
+    for call in llm_calls[:5]:
+        assert Path(call["prompt_path"]).is_file()
+        assert Path(call["response_path"]).is_file()
+    llm_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in Path(status.run_dir, "llm").glob("*.txt")
+    )
+    assert "sk-test-local" not in llm_text
 
     curation = fresh_client.wisdom_curate(query="auth token refresh workflow", top_k=5)
     assert curation.skills
@@ -193,8 +320,8 @@ def test_local_pipeline_ingest_lifecycle_and_feedback(tmp_path, monkeypatch):
 
 
 def test_project_mode_clusters_related_sessions(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_TEST_FAKE_LLM", "1")
     project_root = tmp_path / "repo"
     project_root.mkdir()
     store = LocalStore()
@@ -241,8 +368,8 @@ def test_project_mode_clusters_related_sessions(tmp_path, monkeypatch):
 
 
 def test_anchor_mode_expands_to_neighbors(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_TEST_FAKE_LLM", "1")
     project_root = tmp_path / "repo"
     project_root.mkdir()
     store = LocalStore()
@@ -265,7 +392,7 @@ def test_anchor_mode_expands_to_neighbors(tmp_path, monkeypatch):
         prompt="Fix the CLI help text formatting bug.",
         inspect_message="Inspect the CLI formatter and run the help snapshot.",
         search_message="Search for the CLI help renderer.",
-        search_command="rg -n format_help mega_code/client/cli.py tests/test_cli.py",
+        search_command="rg -n format_help ratchet/client/cli.py tests/test_cli.py",
         verify_message="Run the CLI snapshot test.",
         verify_command="pytest tests/test_cli.py -k help",
         error_message=None,
@@ -291,8 +418,8 @@ def test_anchor_mode_expands_to_neighbors(tmp_path, monkeypatch):
 
 
 def test_singleton_cluster_fallback_when_no_neighbor_matches(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_TEST_FAKE_LLM", "1")
     project_root = tmp_path / "repo"
     project_root.mkdir()
     store = LocalStore()
@@ -329,8 +456,8 @@ def test_singleton_cluster_fallback_when_no_neighbor_matches(tmp_path, monkeypat
 
 
 def test_correction_learning_persists_pcr_fragments(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_TEST_FAKE_LLM", "1")
     project_root = tmp_path / "repo"
     project_root.mkdir()
     store = LocalStore()
@@ -373,8 +500,8 @@ def test_correction_learning_persists_pcr_fragments(tmp_path, monkeypatch):
 
 
 def test_distilled_skill_metadata_includes_governance(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_TEST_FAKE_LLM", "1")
     project_root = tmp_path / "repo"
     project_root.mkdir()
     store = LocalStore()
@@ -420,8 +547,8 @@ def test_distilled_skill_metadata_includes_governance(tmp_path, monkeypatch):
 
 
 def test_curation_ignores_superseded_cluster_operators(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_TEST_FAKE_LLM", "1")
     project_root = tmp_path / "repo"
     project_root.mkdir()
     store = LocalStore()
@@ -466,7 +593,7 @@ def test_curation_ignores_superseded_cluster_operators(tmp_path, monkeypatch):
 
 
 def test_local_pipeline_status_and_stop_are_persisted(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
     store = LocalStore()
     run_id = str(uuid.uuid4())
     store.create_run(
@@ -486,15 +613,69 @@ def test_local_pipeline_status_and_stop_are_persisted(tmp_path, monkeypatch):
     assert result.status == "stopped"
     status = client.get_pipeline_status(run_id=run_id)
     assert status.status == "stopped"
+    events = store.list_pipeline_events(run_id)
+    assert "stop_requested" in [event["event_type"] for event in events]
+
+
+def test_invalid_llm_response_records_failure_artifacts_and_inspect_output(
+    tmp_path,
+    test_env: dict[str, str],
+    monkeypatch,
+):
+    for key in ("RATCHET_DATA_DIR", "RATCHET_TEST_FAKE_LLM", "OPENAI_API_KEY", "PYTHONPATH"):
+        monkeypatch.setenv(key, test_env[key])
+
+    class InvalidAnalystLLM(FakeLocalLLM):
+        def generate_text(self, prompt: str, *, model: str | None = None) -> str:
+            _ = prompt, model
+            return "{not-json"
+
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    store = LocalStore()
+    turn_set = _make_turnset("bad-analyst", tmp_path / "collector" / "bad-analyst", project_root)
+    run_id = _create_run(store, project_id="proj-bad-analyst", project_path=project_root, session_id=None)
+    store.set_run_pid(run_id, __import__("os").getpid())
+    monkeypatch.setattr(local_runtime, "create_llm_client", lambda: InvalidAnalystLLM())
+    monkeypatch.setattr(local_runtime, "load_turnsets_for_run", lambda config, store: [turn_set])
+
+    with pytest.raises(ValueError) as exc_info:
+        local_runtime.run_local_pipeline(run_id, store=store)
+    store.finish_run(run_id, status="failed", error=str(exc_info.value))
+
+    events = store.list_pipeline_events(run_id)
+    assert "runtime_failed" in [event["event_type"] for event in events]
+    failed_event = next(event for event in events if event["event_type"] == "runtime_failed")
+    assert "returned invalid JSON" in failed_event["payload"]["error"]
+
+    llm_calls = store.list_pipeline_llm_calls(run_id)
+    bad_call = next(
+        call
+        for call in llm_calls
+        if Path(call["response_path"]).read_text(encoding="utf-8") == "{not-json"
+    )
+    assert bad_call["status"] == "ok"
+    assert Path(bad_call["response_path"]).read_text(encoding="utf-8") == "{not-json"
+
+    inspect_result, _ = run_subprocess(
+        [sys.executable, "-m", "ratchet.client.cli", "pipeline-inspect", "--run-id", run_id],
+        env=test_env,
+        cwd=project_root,
+        timeout=20,
+    )
+    assert inspect_result.returncode == 0, inspect_result.stderr
+    assert "runtime_failed" in inspect_result.stdout
+    assert "returned invalid JSON" in inspect_result.stdout
+    assert bad_call["response_path"] in inspect_result.stdout
 
 
 def test_install_skill_from_local_source_path(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
     source = tmp_path / "knowledge" / "sample-skill"
     source.mkdir(parents=True)
     (source / "SKILL.md").write_text("# Sample Skill\n", encoding="utf-8")
 
-    from mega_code.client.api.protocol import SkillRefItem
+    from ratchet.client.api.protocol import SkillRefItem
 
     result = install_skill(
         SkillRefItem(name="sample-skill", path=str(source), url="")

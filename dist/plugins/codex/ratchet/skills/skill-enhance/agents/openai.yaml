@@ -1,0 +1,6 @@
+interface:
+  display_name: "Skill Enhance"
+  short_description: "Evaluate and improve a skill"
+  icon_small: "../../../assets/logo_ratchet.png"
+  icon_large: "../../../assets/logo_ratchet.png"
+  default_prompt: "Use $ratchet-skill-enhance to evaluate and enhance a Ratchet skill."

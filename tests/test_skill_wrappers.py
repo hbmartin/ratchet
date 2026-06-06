@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mega_code.pipeline.store import LocalStore
+from ratchet.pipeline.store import LocalStore
 from tests.helpers import (
     find_bash_block,
     make_project_root,
@@ -16,7 +16,7 @@ from tests.helpers import (
 
 
 def _apply_env(monkeypatch, env: dict[str, str]) -> None:
-    for key in ("MEGA_CODE_DATA_DIR", "MEGA_CODE_TEST_FAKE_LLM", "OPENAI_API_KEY"):
+    for key in ("RATCHET_DATA_DIR", "RATCHET_TEST_FAKE_LLM", "OPENAI_API_KEY"):
         monkeypatch.setenv(key, env[key])
 
 
@@ -27,8 +27,8 @@ def test_wisdom_gen_skill_bash_flow_runs_pipeline_and_emits_review_context(
     seeded = seed_uploaded_session(tmp_path / "seed", project_root=make_project_root(tmp_path / "seed"))
     skill_path = repo_root / "skills" / "wisdom-gen" / "SKILL.md"
 
-    setup_block = find_bash_block(skill_path, "mega_code.client.check_auth")
-    run_block = find_bash_block(skill_path, "python -m mega_code.client.run_pipeline [FLAGS]")
+    setup_block = find_bash_block(skill_path, "ratchet.client.check_auth")
+    run_block = find_bash_block(skill_path, "python -m ratchet.client.run_pipeline [FLAGS]")
     run_block = run_block.replace("[FLAGS]", f"--session-id {seeded['session_id']} --poll-timeout 30")
 
     result, elapsed = run_bash(
@@ -45,7 +45,7 @@ def test_wisdom_gen_skill_bash_flow_runs_pipeline_and_emits_review_context(
     assert "PIPELINE COMPLETE" in additional_context
     assert "<RUN_ID>" not in additional_context
     assert "PENDING SKILLS" in additional_context
-    assert list((Path(test_env["MEGA_CODE_DATA_DIR"]) / "data" / "pending-skills").glob("*/SKILL.md"))
+    assert list((Path(test_env["RATCHET_DATA_DIR"]) / "data" / "pending-skills").glob("*/SKILL.md"))
 
 
 def test_wisdom_curate_skill_bash_flow_curates_installs_saves_and_records_feedback(
@@ -67,17 +67,17 @@ def test_wisdom_curate_skill_bash_flow_curates_installs_saves_and_records_feedba
         limit=1,
         concurrency=1,
     )
-    outputs = __import__("mega_code.pipeline.runtime", fromlist=["run_local_pipeline"]).run_local_pipeline(
+    outputs = __import__("ratchet.pipeline.runtime", fromlist=["run_local_pipeline"]).run_local_pipeline(
         run_id, store=store
     )
     store.finish_run(run_id, status="completed", outputs=outputs)
 
     skill_path = repo_root / "skills" / "wisdom-curate" / "SKILL.md"
-    setup_block = find_bash_block(skill_path, "mega_code.client.check_auth")
-    curate_block = find_bash_block(skill_path, "mega-code wisdom-curate")
-    install_block = find_bash_block(skill_path, "from mega_code.client.skill_installer import install_skills")
-    save_block = find_bash_block(skill_path, "from mega_code.client.curation_store import save_curation")
-    feedback_block = find_bash_block(skill_path, "mega-code wisdom-feedback")
+    setup_block = find_bash_block(skill_path, "ratchet.client.check_auth")
+    curate_block = find_bash_block(skill_path, "ratchet wisdom-curate")
+    install_block = find_bash_block(skill_path, "from ratchet.client.skill_installer import install_skills")
+    save_block = find_bash_block(skill_path, "from ratchet.client.curation_store import save_curation")
+    feedback_block = find_bash_block(skill_path, "ratchet wisdom-feedback")
 
     session_id = "wrapper-curate-session"
     curate_script = "\n".join(
@@ -106,7 +106,7 @@ def test_wisdom_curate_skill_bash_flow_curates_installs_saves_and_records_feedba
     )
     assert install_result.returncode == 0, install_result.stderr
     for item in curated["skills"]:
-        installed_skill = Path(test_env["MEGA_CODE_DATA_DIR"]) / "skills" / item["name"] / "SKILL.md"
+        installed_skill = Path(test_env["RATCHET_DATA_DIR"]) / "skills" / item["name"] / "SKILL.md"
         assert installed_skill.is_file()
 
     save_script = save_block.replace("<full curate result JSON from Step 3>", json.dumps(curated, indent=2))
@@ -117,7 +117,7 @@ def test_wisdom_curate_skill_bash_flow_curates_installs_saves_and_records_feedba
         timeout=30,
     )
     assert save_result.returncode == 0, save_result.stderr
-    saved_curation = Path(test_env["MEGA_CODE_DATA_DIR"]) / "curations" / "pending" / f"{session_id}.json"
+    saved_curation = Path(test_env["RATCHET_DATA_DIR"]) / "curations" / "pending" / f"{session_id}.json"
     assert saved_curation.is_file()
 
     feedback_text = """
@@ -171,7 +171,7 @@ def test_status_skill_bash_flow_reports_active_runs_and_pending_items(
 ):
     _apply_env(monkeypatch, test_env)
     project_root = make_project_root(tmp_path / "workspace", name="status-project")
-    data_dir = Path(test_env["MEGA_CODE_DATA_DIR"])
+    data_dir = Path(test_env["RATCHET_DATA_DIR"])
 
     pending_skill_dir = data_dir / "data" / "pending-skills" / "auth-refresh"
     pending_skill_dir.mkdir(parents=True, exist_ok=True)
@@ -200,8 +200,8 @@ def test_status_skill_bash_flow_reports_active_runs_and_pending_items(
     store.set_run_pid(run_id, __import__("os").getpid())
 
     skill_path = repo_root / "skills" / "status" / "SKILL.md"
-    setup_block = find_bash_block(skill_path, "mega_code.client.check_auth")
-    pipeline_status_block = find_bash_block(skill_path, "mega-code pipeline-status")
+    setup_block = find_bash_block(skill_path, "ratchet.client.check_auth")
+    pipeline_status_block = find_bash_block(skill_path, "ratchet pipeline-status")
     detailed_pending_block = find_bash_block(skill_path, 'echo "=== Pending Skills ==="')
 
     result, _ = run_bash(
@@ -213,3 +213,45 @@ def test_status_skill_bash_flow_reports_active_runs_and_pending_items(
     assert result.returncode == 0, result.stderr
     assert run_id in result.stdout
     assert "auth-refresh" in result.stdout
+
+
+def test_debug_skill_bash_flow_collects_evidence_without_provider_auth(
+    repo_root: Path, test_env: dict[str, str], tmp_path: Path, monkeypatch
+):
+    _apply_env(monkeypatch, test_env)
+    project_root = make_project_root(tmp_path / "workspace", name="debug-skill-project")
+    store = LocalStore()
+    run_id = "debug-skill-run"
+    store.create_run(
+        run_id=run_id,
+        project_id="proj-debug-skill",
+        project_path=str(project_root),
+        session_id=None,
+        steps=None,
+        model="fake-local",
+        include_claude=False,
+        include_codex=False,
+        limit=1,
+        concurrency=1,
+    )
+    store.finish_run(run_id, status="failed", error="Synthetic wrapper failure.")
+    status = store.get_pipeline_status(run_id)
+    bundle_dir = Path(status.run_dir or "") / "debug-bundle"
+
+    skill_path = repo_root / "skills" / "debug" / "SKILL.md"
+    debug_block = find_bash_block(skill_path, "ratchet debug")
+    env_without_provider = dict(test_env)
+    env_without_provider.pop("OPENAI_API_KEY", None)
+
+    result, _ = run_bash(
+        "\n".join([f'RUN_ID="{run_id}"', debug_block]),
+        env=env_without_provider,
+        cwd=project_root,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert run_id in result.stdout
+    assert str(bundle_dir) in result.stdout
+    assert bundle_dir.is_dir()
+    assert (bundle_dir / "manifest.json").is_file()

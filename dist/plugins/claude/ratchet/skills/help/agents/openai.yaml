@@ -1,0 +1,6 @@
+interface:
+  display_name: "Ratchet Help"
+  short_description: "Show Ratchet commands and paths"
+  icon_small: "../../../assets/logo_ratchet.png"
+  icon_large: "../../../assets/logo_ratchet.png"
+  default_prompt: "Use $ratchet-help to show available Ratchet commands, output paths, and usage tips."

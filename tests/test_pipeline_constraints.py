@@ -12,11 +12,11 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from mega_code.client.api.protocol import (
+from ratchet.client.api.protocol import (
     PipelineStatusResult,
     TriggerPipelineResult,
 )
-from mega_code.client.api.remote import MegaCodeRemote
+from ratchet.client.api.remote import RatchetRemote
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Unit tests: client handles pipeline-busy (409) responses
@@ -28,8 +28,8 @@ class TestPipelineBusyResponse:
 
     @pytest.fixture
     def client(self):
-        return MegaCodeRemote(
-            server_url="https://test.megacode.ai",
+        return RatchetRemote(
+            server_url="https://test.ratchetai.ai",
             api_key="mg_test_key",
         )
 
@@ -39,7 +39,7 @@ class TestPipelineBusyResponse:
         response_409 = httpx.Response(
             409,
             json={"detail": "Pipeline already running for project test-project"},
-            request=httpx.Request("POST", "https://test.megacode.ai/api/megacode/v1/pipeline/run"),
+            request=httpx.Request("POST", "https://test.ratchetai.ai/api/ratchetai/v1/pipeline/run"),
         )
 
         with patch.object(client, "_get_async_client") as mock_ac:
@@ -61,7 +61,7 @@ class TestPipelineBusyResponse:
         success_response = httpx.Response(
             200,
             json={"run_id": "run-abc", "status": "queued", "message": "ok"},
-            request=httpx.Request("POST", "https://test.megacode.ai/api/megacode/v1/pipeline/run"),
+            request=httpx.Request("POST", "https://test.ratchetai.ai/api/ratchetai/v1/pipeline/run"),
         )
 
         with patch.object(client, "_get_async_client") as mock_ac:
@@ -89,7 +89,7 @@ class TestPipelineBusyResponse:
         success_response = httpx.Response(
             200,
             json={"run_id": "run-force", "status": "queued", "message": "forced"},
-            request=httpx.Request("POST", "https://test.megacode.ai/api/megacode/v1/pipeline/run"),
+            request=httpx.Request("POST", "https://test.ratchetai.ai/api/ratchetai/v1/pipeline/run"),
         )
 
         with patch.object(client, "_get_async_client") as mock_ac:
@@ -111,7 +111,7 @@ class TestPipelineBusyResponse:
         success_response = httpx.Response(
             200,
             json={"run_id": "run-flags", "status": "queued", "message": "ok"},
-            request=httpx.Request("POST", "https://test.megacode.ai/api/megacode/v1/pipeline/run"),
+            request=httpx.Request("POST", "https://test.ratchetai.ai/api/ratchetai/v1/pipeline/run"),
         )
 
         with patch.object(client, "_get_async_client") as mock_ac:
@@ -140,8 +140,8 @@ class TestPipelineStatusPolling:
 
     @pytest.fixture
     def client(self):
-        return MegaCodeRemote(
-            server_url="https://test.megacode.ai",
+        return RatchetRemote(
+            server_url="https://test.ratchetai.ai",
             api_key="mg_test_key",
         )
 
@@ -158,7 +158,7 @@ class TestPipelineStatusPolling:
                 },
                 request=httpx.Request(
                     "GET",
-                    "https://test.megacode.ai/api/megacode/v1/pipeline/status/run-1",
+                    "https://test.ratchetai.ai/api/ratchetai/v1/pipeline/status/run-1",
                 ),
             )
 
@@ -179,7 +179,7 @@ class TestPipelineStatusPolling:
                 },
                 request=httpx.Request(
                     "GET",
-                    "https://test.megacode.ai/api/megacode/v1/pipeline/status/run-2",
+                    "https://test.ratchetai.ai/api/ratchetai/v1/pipeline/status/run-2",
                 ),
             )
 
@@ -199,8 +199,8 @@ class TestTriggerPayloadConstruction:
 
     @pytest.fixture
     def client(self):
-        return MegaCodeRemote(
-            server_url="https://test.megacode.ai",
+        return RatchetRemote(
+            server_url="https://test.ratchetai.ai",
             api_key="mg_test_key",
         )
 
@@ -210,7 +210,7 @@ class TestTriggerPayloadConstruction:
         success = httpx.Response(
             200,
             json={"run_id": "r1", "status": "queued", "message": ""},
-            request=httpx.Request("POST", "https://test.megacode.ai/api/megacode/v1/pipeline/run"),
+            request=httpx.Request("POST", "https://test.ratchetai.ai/api/ratchetai/v1/pipeline/run"),
         )
 
         with patch.object(client, "_get_async_client") as mock_ac:
@@ -233,7 +233,7 @@ class TestTriggerPayloadConstruction:
         success = httpx.Response(
             200,
             json={"run_id": "r2", "status": "queued", "message": ""},
-            request=httpx.Request("POST", "https://test.megacode.ai/api/megacode/v1/pipeline/run"),
+            request=httpx.Request("POST", "https://test.ratchetai.ai/api/ratchetai/v1/pipeline/run"),
         )
 
         with patch.object(client, "_get_async_client") as mock_ac:
@@ -267,7 +267,7 @@ class TestTriggerPayloadConstruction:
         resp_401 = httpx.Response(
             401,
             json={"detail": "Invalid API key"},
-            request=httpx.Request("POST", "https://test.megacode.ai/api/megacode/v1/pipeline/run"),
+            request=httpx.Request("POST", "https://test.ratchetai.ai/api/ratchetai/v1/pipeline/run"),
         )
 
         with patch.object(client, "_get_async_client") as mock_ac:
@@ -291,12 +291,12 @@ class TestPipelineConstraintsAcceptance:
     client code correctly handles the server's concurrency enforcement.
 
     Manual verification steps:
-    1. Start a pipeline: /mega-code:wisdom-gen --project @my-project
-    2. While running, try again: /mega-code:wisdom-gen --project @my-project
+    1. Start a pipeline: /ratchet:wisdom-gen --project @my-project
+    2. While running, try again: /ratchet:wisdom-gen --project @my-project
        → Expected: server returns 409, client shows "pipeline already running"
-    3. While running, try different project: /mega-code:wisdom-gen --project @other-project
+    3. While running, try different project: /ratchet:wisdom-gen --project @other-project
        → Expected: succeeds, runs independently
-    4. Use --force flag: /mega-code:wisdom-gen --project @my-project --force
+    4. Use --force flag: /ratchet:wisdom-gen --project @my-project --force
        → Expected: server decides whether to allow override
     """
 
@@ -320,6 +320,6 @@ class TestPipelineConstraintsAcceptance:
         """The protocol defines force parameter for overriding constraints."""
         import inspect
 
-        sig = inspect.signature(MegaCodeRemote.trigger_pipeline_run)
+        sig = inspect.signature(RatchetRemote.trigger_pipeline_run)
         assert "force" in sig.parameters
         assert sig.parameters["force"].default is False

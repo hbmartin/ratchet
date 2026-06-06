@@ -10,8 +10,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from mega_code.client.api import create_client
-from mega_code.client.models import SessionMetadata, Turn, TurnSet
+from ratchet.client.api import create_client
+from ratchet.client.models import SessionMetadata, Turn, TurnSet
 
 
 def make_project_root(tmp_path: Path, *, name: str = "repo") -> Path:
@@ -30,7 +30,7 @@ def make_project_root(tmp_path: Path, *, name: str = "repo") -> Path:
     (project_root / "pyproject.toml").write_text(
         """
 [project]
-name = "mega-code-test-project"
+name = "ratchet-test-project"
 version = "0.1.0"
 dependencies = ["fastapi", "pytest"]
 """.strip()
@@ -142,6 +142,7 @@ def run_subprocess(
         text=True,
         capture_output=True,
         timeout=timeout,
+        check=False,
     )
     return result, time.monotonic() - started
 

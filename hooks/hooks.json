@@ -1,5 +1,5 @@
 {
-  "description": "MEGA-Code hooks for session collection and skill generation",
+  "description": "Ratchet hooks for session collection and skill generation",
   "hooks": {
     "SessionStart": [{
       "hooks": [{
@@ -11,7 +11,7 @@
     "SessionEnd": [{
       "hooks": [{
         "type": "command",
-        "command": "uv run --directory ${CLAUDE_PLUGIN_ROOT} python mega_code/client/collector.py --event SessionEnd",
+        "command": "uv run --directory ${CLAUDE_PLUGIN_ROOT} python ratchet/client/collector.py --event SessionEnd",
         "timeout": 30
       }]
     }],
@@ -19,14 +19,14 @@
       {
         "hooks": [{
           "type": "command",
-          "command": "uv run --directory ${CLAUDE_PLUGIN_ROOT} python mega_code/client/collector.py --event UserPromptSubmit",
+          "command": "uv run --directory ${CLAUDE_PLUGIN_ROOT} python ratchet/client/collector.py --event UserPromptSubmit",
           "timeout": 5
         }]
       },
       {
         "hooks": [{
           "type": "command",
-          "command": "uv run --directory ${CLAUDE_PLUGIN_ROOT} python mega_code/client/check_pending.py",
+          "command": "uv run --directory ${CLAUDE_PLUGIN_ROOT} python ratchet/client/check_pending.py",
           "timeout": 5,
           "statusMessage": "Checking for pending skills..."
         }]
@@ -35,7 +35,7 @@
     "Stop": [{
       "hooks": [{
         "type": "command",
-        "command": "uv run --directory ${CLAUDE_PLUGIN_ROOT} python mega_code/client/collector.py --event Stop",
+        "command": "uv run --directory ${CLAUDE_PLUGIN_ROOT} python ratchet/client/collector.py --event Stop",
         "timeout": 5
       }]
     }]

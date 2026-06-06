@@ -10,10 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from mega_code.client.api.protocol import CausalStepFeedbackItem
-from mega_code.pipeline.llm import batch_embed_texts
-from mega_code.pipeline.runtime import curate_local_wisdom
-from mega_code.pipeline.store import LocalStore, utcnow_iso
+from ratchet.client.api.protocol import CausalStepFeedbackItem, OperatorPlanItem, WisdomCurateResult
+from ratchet.pipeline.llm import batch_embed_texts
+from ratchet.pipeline.runtime import curate_local_wisdom
+from ratchet.pipeline.store import LocalStore, utcnow_iso
 
 
 def _prepare_project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -220,7 +220,7 @@ def _persist_operators(
 
 
 def test_operator_graph_schema_is_created(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
     store = LocalStore()
 
     with sqlite3.connect(store.db_path) as conn:
@@ -241,9 +241,73 @@ def test_operator_graph_schema_is_created(tmp_path, monkeypatch):
     }.issubset(tables)
 
 
+def test_schema_upgrade_adds_safety_columns_before_indexes(tmp_path):
+    db_path = tmp_path / "old-runtime.sqlite3"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE artifacts (
+                artifact_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                artifact_type TEXT NOT NULL
+            );
+            CREATE TABLE pcr_fragments (
+                fragment_id TEXT PRIMARY KEY,
+                source_artifact TEXT NOT NULL
+            );
+            CREATE TABLE operators (
+                operator_id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                normalized_intent TEXT NOT NULL,
+                slot_signature TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            INSERT INTO artifacts(artifact_id, name, artifact_type)
+                VALUES('artifact-1', 'Skill', 'skill');
+            INSERT INTO pcr_fragments(fragment_id, source_artifact)
+                VALUES('fragment-1', 'Skill');
+            INSERT INTO operators(
+                operator_id, project_id, normalized_intent, slot_signature, created_at
+            ) VALUES('operator-1', 'project-1', 'intent', 'slots', '2026-01-01T00:00:00Z');
+            """
+        )
+
+    LocalStore(db_path=db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        artifact_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(artifacts)").fetchall()
+        }
+        indexes = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            ).fetchall()
+        }
+
+    assert {"safety_gate_status", "trust_tier"}.issubset(artifact_columns)
+    assert "idx_artifacts_safety_gate" in indexes
+    assert "idx_pcr_fragments_safety_gate" in indexes
+
+
+def test_operator_plan_item_defaults_env_match_score():
+    item = OperatorPlanItem.model_validate(
+        {
+            "operator_id": "operator-1",
+            "title": "Run tests",
+            "source_artifact": "test-skill",
+            "score": 0.5,
+            "status": "ready",
+        }
+    )
+
+    assert item.env_match_score == 0.0
+
+
 def test_curate_matches_context_and_outcome_indexes(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_TEST_FAKE_LLM", "1")
     _prepare_project_root(tmp_path, monkeypatch)
     store = LocalStore()
 
@@ -278,8 +342,8 @@ def test_curate_matches_context_and_outcome_indexes(tmp_path, monkeypatch):
 
 
 def test_curate_expands_dependency_and_context_edges(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_TEST_FAKE_LLM", "1")
     _prepare_project_root(tmp_path, monkeypatch)
     store = LocalStore()
 
@@ -353,9 +417,56 @@ def test_curate_expands_dependency_and_context_edges(tmp_path, monkeypatch):
     assert "Wave 1: serial" in result.curation
 
 
+def test_resaving_operator_preserves_inbound_edges(tmp_path, monkeypatch):
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_TEST_FAKE_LLM", "1")
+    _prepare_project_root(tmp_path, monkeypatch)
+    store = LocalStore()
+
+    dependency_operator_id = str(uuid.uuid4())
+    target_operator_id = str(uuid.uuid4())
+    dependency = _operator_payload(
+        artifact_id="placeholder",
+        artifact_name="auth-graph",
+        operator_id=dependency_operator_id,
+        title="Inspect auth context",
+        procedure="Inspect the auth module context first.",
+        context="python fastapi uv auth module context",
+        outcome="Understand the auth module boundaries.",
+    )
+    target = _operator_payload(
+        artifact_id="placeholder",
+        artifact_name="auth-graph",
+        operator_id=target_operator_id,
+        title="Run auth regression tests",
+        procedure="Run auth regression tests for the refresh flow.",
+        context="python fastapi uv pytest auth tests",
+        outcome="refresh flow tests pass without regressions",
+        edges=[
+            {
+                "edge_type": "depends_on",
+                "target_operator_id": dependency_operator_id,
+                "metadata": {},
+            }
+        ],
+    )
+    _persist_operators(store=store, tmp_path=tmp_path, operators=[dependency, target])
+
+    dependency["procedure"] = "Inspect the auth module context before any test run."
+    _persist_operators(store=store, tmp_path=tmp_path, operators=[dependency])
+
+    operators = {item["operator_id"]: item for item in store.fetch_operators()}
+
+    assert any(
+        edge["edge_type"] == "depends_on"
+        and edge["target_operator_id"] == dependency_operator_id
+        for edge in operators[target_operator_id]["edges"]
+    )
+
+
 def test_curate_suppresses_conflicts_and_superseded_ops(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_TEST_FAKE_LLM", "1")
     _prepare_project_root(tmp_path, monkeypatch)
     store = LocalStore()
 
@@ -438,8 +549,8 @@ def test_curate_suppresses_conflicts_and_superseded_ops(tmp_path, monkeypatch):
 
 
 def test_curate_marks_missing_preconditions_and_slots_blocked(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_TEST_FAKE_LLM", "1")
     _prepare_project_root(tmp_path, monkeypatch)
     store = LocalStore()
 
@@ -483,8 +594,8 @@ def test_curate_marks_missing_preconditions_and_slots_blocked(tmp_path, monkeypa
 
 
 def test_curate_excludes_review_required_operator(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_TEST_FAKE_LLM", "1")
     _prepare_project_root(tmp_path, monkeypatch)
     store = LocalStore()
 
@@ -523,8 +634,8 @@ def test_curate_excludes_review_required_operator(tmp_path, monkeypatch):
 
 
 def test_feedback_increases_operator_rank(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_TEST_FAKE_LLM", "1")
     _prepare_project_root(tmp_path, monkeypatch)
     store = LocalStore()
 
@@ -553,9 +664,39 @@ def test_feedback_increases_operator_rank(tmp_path, monkeypatch):
     assert second.operator_plan[0].reliability is not None
 
 
+def test_feedback_defaults_corrupt_operator_plan_to_empty(tmp_path, monkeypatch):
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    store = LocalStore()
+    session_id = str(uuid.uuid4())
+    store.save_curation(
+        WisdomCurateResult(
+            session_id=session_id,
+            query="broken plan",
+            curation="curation",
+            operator_plan=[],
+            readiness_summary={"ready": 0, "blocked": 0},
+            confidence=0.0,
+            should_abstain=False,
+            abstain_reason="",
+            token_count=0,
+            cost_usd=0.0,
+        )
+    )
+    with sqlite3.connect(store.db_path) as conn:
+        conn.execute(
+            "UPDATE curation_sessions SET operator_plan_json=? WHERE session_id=?",
+            ("not-json", session_id),
+        )
+
+    feedback = store.save_feedback(session_id, "Looks useful overall.")
+
+    assert feedback.status == "saved"
+    assert feedback.applied_steps == 0
+
+
 def test_structured_feedback_updates_only_targeted_operator(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_TEST_FAKE_LLM", "1")
     _prepare_project_root(tmp_path, monkeypatch)
     store = LocalStore()
 
@@ -608,8 +749,8 @@ def test_structured_feedback_updates_only_targeted_operator(tmp_path, monkeypatc
 
 
 def test_feedback_can_mark_operator_for_abstention(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_TEST_FAKE_LLM", "1")
     _prepare_project_root(tmp_path, monkeypatch)
     store = LocalStore()
 
@@ -657,8 +798,8 @@ def test_feedback_can_mark_operator_for_abstention(tmp_path, monkeypatch):
 
 
 def test_curate_marks_seeds_and_parallel_waves(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_TEST_FAKE_LLM", "1")
     _prepare_project_root(tmp_path, monkeypatch)
     store = LocalStore()
 
@@ -701,8 +842,8 @@ def test_curate_marks_seeds_and_parallel_waves(tmp_path, monkeypatch):
 
 
 def test_curate_returns_empty_plan_without_operators(tmp_path, monkeypatch):
-    monkeypatch.setenv("MEGA_CODE_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MEGA_CODE_TEST_FAKE_LLM", "1")
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("RATCHET_TEST_FAKE_LLM", "1")
     _prepare_project_root(tmp_path, monkeypatch)
     store = LocalStore()
 

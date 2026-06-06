@@ -1,15 +1,16 @@
 {
-  "name": "mega-code",
+  "name": "ratchet",
+  "version": "2.0.0b1",
   "description": "Self-Evolving AI Coding Infrastructure — Generate, Curate, and Enhance Reusable Wisdom",
   "author": {
     "name": "Mind AI",
-    "email": "support@megacode.ai"
+    "email": "support@ratchetai.ai"
   },
-  "homepage": "https://www.megacode.ai",
-  "repository": "https://github.com/wisdomgraph/mega-code",
+  "homepage": "https://www.ratchetai.ai",
+  "repository": "https://github.com/wisdomgraph/ratchetai",
   "license": "Apache-2.0",
   "keywords": [
-    "mega",
+    "ratchet",
     "optimization",
     "skills",
     "data-collection",

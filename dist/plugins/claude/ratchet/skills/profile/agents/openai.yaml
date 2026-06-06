@@ -1,0 +1,6 @@
+interface:
+  display_name: "Ratchet Profile"
+  short_description: "View or update developer profile"
+  icon_small: "../../../assets/logo_ratchet.png"
+  icon_large: "../../../assets/logo_ratchet.png"
+  default_prompt: "Use $ratchet-profile to view or update my Ratchet developer profile."
