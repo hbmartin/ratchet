@@ -10,7 +10,6 @@ the single source of truth for the pipeline.
 import json
 import logging
 from pathlib import Path
-from typing import Literal, cast
 
 from ratchet.client.compaction import CodeBlockCompactor
 from ratchet.client.history.models import Message, Session
@@ -109,7 +108,7 @@ class TurnExtractor:
             result = self.compactor.compact(content)
             content = result.compacted
 
-        role = cast(Literal["user", "assistant"], msg.role)
+        role = msg.role
         return Turn(
             turn_id=index,
             role=role,

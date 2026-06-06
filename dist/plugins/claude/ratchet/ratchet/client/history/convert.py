@@ -35,26 +35,44 @@ import argparse
 import sys
 from pathlib import Path
 
+from ratchet.client.history.protocol import DataSource
 from ratchet.client.history.sources import (
     ClaudeNativeSource,
     CodexSource,
     CursorSource,
     GeminiSource,
-    RatchetSource,
     OpenCodeSource,
     ParquetDatasetSource,
+    RatchetSource,
 )
 
-# Registry mapping tool names to converter classes
-SOURCE_REGISTRY = {
-    "cursor": CursorSource,
-    "gemini": GeminiSource,
-    "claude": ClaudeNativeSource,
-    "codex": CodexSource,
-    "ratchet": RatchetSource,
-    "opencode": OpenCodeSource,
-    "parquet": ParquetDatasetSource,
-}
+SOURCE_NAMES = ("cursor", "gemini", "claude", "codex", "ratchet", "opencode", "parquet")
+
+
+def _source_names() -> str:
+    return ", ".join(SOURCE_NAMES)
+
+
+def _build_source(tool: str, base_path: Path | None, source_name: str | None) -> DataSource:
+    if tool == "parquet":
+        if not source_name:
+            raise ValueError("--source-name required for parquet")
+        if not base_path:
+            raise ValueError("--base-path required for parquet")
+        return ParquetDatasetSource(path=base_path, source_name=source_name)
+    if tool == "cursor":
+        return CursorSource(base_path=base_path)
+    if tool == "gemini":
+        return GeminiSource(base_path=base_path)
+    if tool == "claude":
+        return ClaudeNativeSource(base_path=base_path)
+    if tool == "codex":
+        return CodexSource(base_path=base_path)
+    if tool == "ratchet":
+        return RatchetSource(base_path=base_path)
+    if tool == "opencode":
+        return OpenCodeSource(base_path=base_path)
+    raise ValueError(f"Unknown tool: {tool}. Available: {_source_names()}")
 
 
 def run_converter(
@@ -77,21 +95,7 @@ def run_converter(
         mode: Export mode (messages|sessions)
         **kwargs: Additional tool-specific args (e.g., source_name for parquet)
     """
-    # Validate tool name
-    if tool not in SOURCE_REGISTRY:
-        raise ValueError(f"Unknown tool: {tool}. Available: {', '.join(SOURCE_REGISTRY.keys())}")
-
-    # Instantiate source
-    source_cls = SOURCE_REGISTRY[tool]
-    if tool == "parquet":
-        source_name = kwargs.get("source_name")
-        if not source_name:
-            raise ValueError("--source-name required for parquet")
-        if not base_path:
-            raise ValueError("--base-path required for parquet")
-        source = source_cls(path=base_path, source_name=source_name)
-    else:
-        source = source_cls(base_path=base_path)
+    source = _build_source(tool, base_path, kwargs.get("source_name"))
 
     # Load sessions
     if session_id:
@@ -156,7 +160,7 @@ Examples:
 
     parser.add_argument(
         "tool",
-        choices=list(SOURCE_REGISTRY.keys()),
+        choices=list(SOURCE_NAMES),
         help="Tool name to extract from",
     )
     parser.add_argument(

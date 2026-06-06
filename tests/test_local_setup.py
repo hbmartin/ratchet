@@ -90,3 +90,19 @@ def test_load_profile_recovers_from_invalid_json(tmp_path, monkeypatch):
     assert profile.language is None
     assert profile.level is None
     assert profile.style is None
+
+
+@pytest.mark.parametrize("profile_json", ["null", "[]", '"not-an-object"'])
+def test_load_profile_recovers_from_non_object_json(tmp_path, monkeypatch, profile_json):
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    from ratchet.client.profile import get_profile_path, load_profile
+
+    path = get_profile_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(profile_json, encoding="utf-8")
+
+    profile = load_profile()
+
+    assert profile.language is None
+    assert profile.level is None
+    assert profile.style is None

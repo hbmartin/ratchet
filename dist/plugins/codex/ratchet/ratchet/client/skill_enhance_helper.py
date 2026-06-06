@@ -15,6 +15,7 @@ import os
 import sys
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 from ratchet.client.pending import (
     FEEDBACK_DIR,
@@ -41,10 +42,11 @@ from ratchet.client.utils.tracing import traced
 logger = logging.getLogger(__name__)
 
 
+_otel_trace: Any | None = None
 try:
     from opentelemetry import trace as _otel_trace
 except ImportError:
-    _otel_trace = None  # type: ignore[assignment]
+    pass
 
 
 def _set_span_attrs(attrs: dict) -> None:

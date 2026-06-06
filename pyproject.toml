@@ -109,6 +109,24 @@ known-first-party = ["ratchet"]
 quote-style = "double"
 indent-style = "space"
 
+[tool.pyrefly]
+project-includes = [
+    "ratchet/**/*.py",
+    "scripts/**/*.py",
+]
+search-path = ["."]
+python-version = "3.11"
+preset = "basic"
+
+[tool.ty.src]
+include = ["ratchet", "scripts"]
+
+[tool.ty.environment]
+python-version = "3.11"
+
+[tool.ty.terminal]
+output-format = "concise"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
@@ -117,6 +135,8 @@ asyncio_mode = "auto"
 dev = [
     "ruff>=0.11.0",
     "datamodel-code-generator==0.31.2",
+    "pyrefly>=1.0.0",
+    "ty>=0.0.44",
 ]
 test = [
     "pytest>=9.0.2",

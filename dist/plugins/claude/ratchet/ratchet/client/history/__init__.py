@@ -51,31 +51,27 @@ from ratchet.client.history.sources import (
     CodexSource,
     CursorSource,
     GeminiSource,
-    RatchetSource,
     OpenCodeSource,
     ParquetDatasetSource,
+    RatchetSource,
 )
 
 __all__ = [
-    # Sources
     "ClaudeNativeSource",
     "CodexSource",
     "CursorSource",
     "DataLoader",
-    # Protocol
     "DataSource",
     "GeminiSource",
     "HistorySessionMetadata",
     "HistorySessionStats",
-    "RatchetSource",
-    # Models
     "Message",
     "OpenCodeSource",
     "ParquetDatasetSource",
+    "RatchetSource",
     "Session",
     "TokenUsage",
     "ToolCall",
-    # Main API
     "create_loader",
     "load_session_by_id",
     "load_sessions_from_project",

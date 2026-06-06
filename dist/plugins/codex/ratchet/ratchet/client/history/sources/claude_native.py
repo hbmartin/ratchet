@@ -93,7 +93,7 @@ class ClaudeNativeSource:
                 logger.warning(f"Failed to load sessions index from {index_path}: {e}")
 
         # Discover JSONL files not in the index
-        indexed_ids = {e.get("sessionId") for e in entries}
+        indexed_ids = {session_id for e in entries if isinstance(session_id := e.get("sessionId"), str)}
         discovered = self._discover_sessions_from_jsonl(project_dir, indexed_ids)
         entries.extend(discovered)
 
@@ -434,14 +434,14 @@ class ClaudeNativeSource:
     def iter_sessions_by_project_paths(
         self,
         project_paths: list[str],
-        path_matcher: Callable[[str, set[str]], bool] | None = None,
+        path_matcher: Callable[[str, set[Path]], bool] | None = None,
     ) -> Iterator[dict[str, Any]]:
         """Iterate over session index entries matching project paths.
 
         Args:
             project_paths: List of project paths to filter by.
             path_matcher: Optional custom function to match session paths against target paths.
-                         Signature: (session_path: str, target_paths: set[str]) -> bool
+                         Signature: (session_path: str, target_paths: set[Path]) -> bool
                          If None, uses default exact match behavior.
 
         Yields:

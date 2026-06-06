@@ -375,6 +375,10 @@ To develop and test changes locally from this repository:
 # Install dependencies
 uv sync
 
+# Type check source and scripts
+uv run --locked --all-extras pyrefly check --summarize-errors
+uv run --locked --all-extras ty check
+
 # Regenerate committed Claude and Codex plugin packages
 uv run python scripts/generate_plugin_packages.py
 ```

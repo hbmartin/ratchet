@@ -27,11 +27,13 @@ def _parse_otlp_headers(headers_str: str) -> tuple[tuple[str, str], ...]:
     """
     if not headers_str:
         return ()
-    return tuple(
-        tuple(h.strip().split("=", 1))  # type: ignore[misc]
-        for h in headers_str.split(",")
-        if "=" in h
-    )
+    headers: list[tuple[str, str]] = []
+    for header in headers_str.split(","):
+        if "=" not in header:
+            continue
+        key, value = header.strip().split("=", 1)
+        headers.append((key, value))
+    return tuple(headers)
 
 
 _client_initialized = False

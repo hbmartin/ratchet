@@ -15,7 +15,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 from ratchet.client.api.protocol import (
     ACTIVE_STATUSES,
@@ -34,6 +34,7 @@ from ratchet.client.models import TurnSet
 from ratchet.client.turns import load_turns_jsonl, save_turns_jsonl
 
 SQLITE_IN_CHUNK_SIZE = 900
+FailureStage = Literal["none", "retrieval", "execution", "mixed", "unknown"]
 
 
 def utcnow_iso() -> str:
@@ -2049,10 +2050,10 @@ def clamp(value: float, *, lower: float = 0.0, upper: float = 1.0) -> float:
     return max(lower, min(upper, value))
 
 
-def normalize_failure_stage(value: str | None) -> str:
+def normalize_failure_stage(value: str | None) -> FailureStage:
     normalized = (value or "unknown").strip().lower()
     if normalized in {"none", "retrieval", "execution", "mixed", "unknown"}:
-        return normalized
+        return cast(FailureStage, normalized)
     return "unknown"
 
 

@@ -6,9 +6,10 @@ import argparse
 from pathlib import Path
 
 from ratchet.client import cli
-from ratchet.client.compaction import CodeBlockCompactor
 from ratchet.client import config as config_module
+from ratchet.client.compaction import CodeBlockCompactor
 from ratchet.client.filters.secrets import SecretMasker
+from ratchet.client.skill_utils import ensure_strategy_frontmatter, parse_frontmatter
 from ratchet.client.utils.io import atomic_write
 from ratchet.client.utils.path_utils import normalize_path
 
@@ -69,9 +70,37 @@ def test_code_block_compactor_handles_info_strings_and_regex_prefixes():
 
     result = compactor.compact(content)
 
-    assert '[CODE.BLOCK_0_1_LINES]' in result.compacted
+    assert "[CODE.BLOCK_0_1_LINES]" in result.compacted
     assert "const x = 1;" not in result.compacted
     assert compactor.restore(result.compacted, result.code_blocks) == content
+
+
+def test_ensure_strategy_frontmatter_leaves_unclosed_frontmatter_unchanged():
+    content = "---\ncategory: broken\n# Strategy Body\n"
+
+    assert ensure_strategy_frontmatter(content, "local-runtime") == content
+
+
+def test_ensure_strategy_frontmatter_keeps_core_fields_ahead_of_extra_fields():
+    rendered = ensure_strategy_frontmatter(
+        "Use retries before rebuilding the client.\n",
+        "local-runtime",
+        author="ratchet",
+        version="1.2.3",
+        extra_frontmatter={
+            "category": "override",
+            "author": "override",
+            "version": "9.9.9",
+            "validation_level": "verified",
+        },
+    )
+
+    frontmatter = parse_frontmatter(rendered)
+
+    assert frontmatter["category"] == "local-runtime"
+    assert frontmatter["author"] == "ratchet"
+    assert frontmatter["version"] == "1.2.3"
+    assert frontmatter["validation_level"] == "verified"
 
 
 def test_pipeline_logs_follow_streams_new_lines_without_rereading(tmp_path, monkeypatch, capsys):
@@ -83,7 +112,11 @@ def test_pipeline_logs_follow_streams_new_lines_without_rereading(tmp_path, monk
             return argparse.Namespace(log_path=str(log_path))
 
     monkeypatch.setattr(cli, "_local_store", lambda: Store())
-    monkeypatch.setattr(Path, "read_text", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("read_text called")))
+    monkeypatch.setattr(
+        Path,
+        "read_text",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("read_text called")),
+    )
 
     sleep_calls = 0
 

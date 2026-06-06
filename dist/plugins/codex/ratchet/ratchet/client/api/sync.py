@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -81,7 +81,7 @@ def _upload_sessions(
     *,
     ledger_path: Path,
     ledger_key: str,
-    sessions: list[tuple[str, Callable[[], TurnSet | None]]],
+    sessions: Sequence[tuple[str, Callable[[], TurnSet | None]]],
     client: RatchetBaseClient,
     project_id: str,
     label: str = "",
@@ -229,9 +229,13 @@ def sync_claude_trajectories(
         logger.info("No Claude native sessions found for project")
         return 0
 
-    sessions = [
-        (s.metadata.session_id, lambda s=s: _session_to_turnset(s)) for s in claude_sessions
-    ]
+    def _make_loader(session: Session) -> Callable[[], TurnSet | None]:
+        def _load() -> TurnSet | None:
+            return _session_to_turnset(session)
+
+        return _load
+
+    sessions = [(s.metadata.session_id, _make_loader(s)) for s in claude_sessions]
 
     return _upload_sessions(
         ledger_path=project_dir / "sync-ledger.json",
