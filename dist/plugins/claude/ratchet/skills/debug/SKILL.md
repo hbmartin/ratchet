@@ -26,9 +26,10 @@ else
 fi
 ```
 
-`ratchet debug` auto-selects a run when no run id is supplied. It prefers the
-newest failed or stale active run, otherwise the newest recent run. Local debug
-evidence does not require provider auth.
+`ratchet debug` auto-selects a run when no run id is supplied. It first selects
+the newest failed run or an active run that has exceeded the staleness threshold;
+if neither exists, it selects the newest recent run. Local debug evidence does
+not require provider auth.
 
 The command prints run evidence and writes a raw local bundle directory. Use the
 reported `Bundle dir` path when handing off evidence.

@@ -83,6 +83,7 @@ fi
 if [ ! -f "$RATCHET_DIR/.env" ]; then
     touch "$RATCHET_DIR/.env"
 fi
+set -a && . "$RATCHET_DIR/.env" 2>/dev/null && set +a
 
 # ── 6. Ensure Python environment is ready (first-run only) ────────────
 # Check for the actual python binary, not just .venv directory — the dir

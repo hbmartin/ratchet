@@ -10,28 +10,19 @@ allowed-tools: Bash, Read
 Ratchet runs locally by default. OAuth login and provider keys are no longer
 required for normal use.
 
-## Setup
+## Usage
 
 ```bash
 RATCHET_DIR="${RATCHET_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$(cat ~/.local/ratchet/plugin-root 2>/dev/null)}}}"
 set -a && . "$RATCHET_DIR/.env" 2>/dev/null && set +a
-```
 
-## Show Status
-
-```bash
+# Show status
 uv run --directory "$RATCHET_DIR" ratchet login
-```
 
-## Optional Host-Agent Generation
+# Optional: enable host-agent generation
+# uv run --directory "$RATCHET_DIR" ratchet configure --llm-mode host-cli --host-agent codex
 
-```bash
-uv run --directory "$RATCHET_DIR" ratchet configure --llm-mode host-cli --host-agent codex
-```
-
-## Verify
-
-```bash
+# Verify configuration
 uv run --directory "$RATCHET_DIR" ratchet status
 ```
 

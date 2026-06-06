@@ -6,10 +6,12 @@ import asyncio
 import os
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
 from ratchet.client.api.protocol import (
+    ACTIVE_STATUSES,
     ActivePipelinesResult,
     CausalStepFeedbackItem,
     EnhanceSkillResult,
@@ -29,6 +31,9 @@ from ratchet.client.profile import load_profile as load_local_profile
 from ratchet.client.profile import save_profile as save_local_profile
 from ratchet.pipeline.runtime import curate_local_wisdom
 from ratchet.pipeline.store import LocalStore
+
+_FORCE_REPLACEMENT_TIMEOUT_SECONDS = 10.0
+_FORCE_REPLACEMENT_POLL_SECONDS = 0.1
 
 
 class RatchetLocal:
@@ -87,7 +92,9 @@ class RatchetLocal:
         if active_run_id and not force:
             raise PipelineConflictError(project_id=project_id, run_id=active_run_id)
         if active_run_id and force:
+            active_pid = self.store.get_pipeline_run_row(active_run_id).get("pid")
             self.stop_pipeline(run_id=active_run_id)
+            await self._wait_for_run_exit(active_run_id, active_pid)
 
         run_id = str(uuid.uuid4())
         result = self.store.create_run(
@@ -138,6 +145,40 @@ class RatchetLocal:
         )
         await asyncio.sleep(0)
         return result
+
+    async def _wait_for_run_exit(
+        self,
+        run_id: str,
+        pid: int | None,
+        *,
+        timeout: float = _FORCE_REPLACEMENT_TIMEOUT_SECONDS,
+        poll_interval: float = _FORCE_REPLACEMENT_POLL_SECONDS,
+    ) -> None:
+        """Wait for a stopped worker PID to exit before replacing it."""
+        deadline = time.monotonic() + timeout
+        while True:
+            status = self.store.get_pipeline_status(run_id)
+            pid_running = self._pid_is_running(pid)
+            if not pid_running and status.status not in ACTIVE_STATUSES:
+                return
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Timed out waiting for previous pipeline worker to exit "
+                    f"(run_id={run_id}, pid={pid})"
+                )
+            await asyncio.sleep(min(poll_interval, remaining))
+
+    @staticmethod
+    def _pid_is_running(pid: int | None) -> bool:
+        if not pid:
+            return False
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
 
     def get_pipeline_status(
         self,
@@ -195,7 +236,9 @@ class RatchetLocal:
         session_id: str = "",
         top_k: int = 20,
     ) -> WisdomCurateResult:
-        return curate_local_wisdom(query=query, session_id=session_id, top_k=top_k, store=self.store)
+        return curate_local_wisdom(
+            query=query, session_id=session_id, top_k=top_k, store=self.store
+        )
 
     def wisdom_feedback(
         self,

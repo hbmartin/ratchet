@@ -9,20 +9,19 @@ logger = logging.getLogger(__name__)
 def normalize_path(path: str | Path) -> Path:
     """Normalize path for comparison.
 
-    Resolves symlinks, relative paths, and converts to lowercase
-    for case-insensitive matching.
+    Resolves symlinks and relative paths while preserving path casing.
 
     Args:
         path: Path to normalize (string or Path object)
 
     Returns:
-        Normalized Path object (lowercase, resolved)
+        Normalized Path object (resolved)
 
     Example:
         >>> normalize_path("/Users/Foo/Project")
-        PosixPath('/users/foo/project')
+        PosixPath('/Users/Foo/Project')
     """
-    return Path(str(Path(path).resolve()).lower())
+    return Path(path).resolve()
 
 
 def should_include_session(

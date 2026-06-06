@@ -47,7 +47,7 @@ def cosine_similarity(left: list[float], right: list[float]) -> float:
     denom_right = math.sqrt(sum(v * v for v in right))
     if denom_left <= 0 or denom_right <= 0:
         return 0.0
-    return sum(a * b for a, b in zip(left, right, strict=False)) / (denom_left * denom_right)
+    return sum(a * b for a, b in zip(left, right, strict=True)) / (denom_left * denom_right)
 
 
 def _safe_path_part(value: str) -> str:
@@ -468,37 +468,40 @@ class LocalStore:
         Path(paths["log_path"]).touch(exist_ok=True)
         Path(paths["events_path"]).touch(exist_ok=True)
 
+    def _ensure_run_debug_paths(self, conn: sqlite3.Connection, run_id: str) -> dict[str, str]:
+        row = conn.execute(
+            "SELECT run_id, project_id, run_dir, log_path, events_path FROM pipeline_runs WHERE run_id=?",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"Unknown run_id: {run_id}")
+        paths = {
+            "run_dir": row["run_dir"] or "",
+            "log_path": row["log_path"] or "",
+            "events_path": row["events_path"] or "",
+        }
+        defaults = self._default_run_paths(row["project_id"], run_id)
+        changed = False
+        for key, value in defaults.items():
+            if not paths[key]:
+                paths[key] = value
+                changed = True
+        self._ensure_debug_files(paths)
+        if changed:
+            conn.execute(
+                """
+                UPDATE pipeline_runs
+                SET run_dir=?, log_path=?, events_path=?
+                WHERE run_id=?
+                """,
+                (paths["run_dir"], paths["log_path"], paths["events_path"], run_id),
+            )
+        return paths
+
     def ensure_run_debug_paths(self, run_id: str) -> dict[str, str]:
         """Return durable run debug paths, creating and backfilling them if needed."""
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT run_id, project_id, run_dir, log_path, events_path FROM pipeline_runs WHERE run_id=?",
-                (run_id,),
-            ).fetchone()
-            if row is None:
-                raise KeyError(f"Unknown run_id: {run_id}")
-            paths = {
-                "run_dir": row["run_dir"] or "",
-                "log_path": row["log_path"] or "",
-                "events_path": row["events_path"] or "",
-            }
-            defaults = self._default_run_paths(row["project_id"], run_id)
-            changed = False
-            for key, value in defaults.items():
-                if not paths[key]:
-                    paths[key] = value
-                    changed = True
-            self._ensure_debug_files(paths)
-            if changed:
-                conn.execute(
-                    """
-                    UPDATE pipeline_runs
-                    SET run_dir=?, log_path=?, events_path=?
-                    WHERE run_id=?
-                    """,
-                    (paths["run_dir"], paths["log_path"], paths["events_path"], run_id),
-                )
-        return paths
+            return self._ensure_run_debug_paths(conn, run_id)
 
     def _touch_heartbeat(self, conn: sqlite3.Connection, run_id: str, now: str | None = None) -> str:
         timestamp = now or utcnow_iso()
@@ -524,7 +527,6 @@ class LocalStore:
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Persist a structured pipeline event and mirror it to the run JSONL file."""
-        paths = self.ensure_run_debug_paths(run_id)
         event = {
             "event_id": str(uuid.uuid4()),
             "run_id": run_id,
@@ -537,6 +539,7 @@ class LocalStore:
         }
         payload_json = json.dumps(event["payload"], ensure_ascii=False, sort_keys=True)
         with self._connect() as conn:
+            paths = self._ensure_run_debug_paths(conn, run_id)
             conn.execute(
                 """
                 INSERT INTO pipeline_events(

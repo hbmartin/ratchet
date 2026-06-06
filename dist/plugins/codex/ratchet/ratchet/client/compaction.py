@@ -39,8 +39,9 @@ class CodeBlockCompactor:
             self._counter += 1
             return f"```{lang}\n[{placeholder_id}_{lines}_LINES]\n```"
 
-        # Match markdown code fences
-        pattern = r"```(\w*)\n(.*?)\n```"
+        # Match markdown code fences, including language info strings with
+        # punctuation or attributes such as `tsx title="Component"`.
+        pattern = r"```([^\n`]*)\r?\n(.*?)\r?\n```"
         compacted = re.sub(pattern, replace_block, content, flags=re.DOTALL)
 
         return CompactionResult(compacted=compacted, code_blocks=code_blocks)
@@ -49,7 +50,8 @@ class CodeBlockCompactor:
         """Restore original code blocks from placeholders."""
         result = compacted
         for placeholder_id, original in code_blocks.items():
-            pattern = rf"```\w*\n\[{placeholder_id}_\d+_LINES\]\n```"
+            escaped_id = re.escape(placeholder_id)
+            pattern = rf"```[^\n`]*\r?\n\[{escaped_id}_\d+_LINES\]\r?\n```"
             result = re.sub(pattern, original, result)
         return result
 

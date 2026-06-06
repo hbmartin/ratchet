@@ -41,7 +41,8 @@ def _make_turnset(
     search_command: str = "rg -n refresh_token src/auth.py tests/test_auth.py",
     verify_message: str = "Run the auth tests after patching.",
     verify_command: str = "pytest tests/test_auth.py -k refresh",
-    error_message: str | None = "If the first fix fails, inspect the failing request and retry once.",
+    error_message: str
+    | None = "If the first fix fails, inspect the failing request and retry once.",
     recovery_message: str | None = None,
     recovery_command: str | None = None,
 ) -> TurnSet:
@@ -349,7 +350,9 @@ def test_project_mode_clusters_related_sessions(tmp_path, monkeypatch):
         verify_command="pnpm exec eslint src/dashboard.tsx",
         error_message=None,
     )
-    run_id = _create_run(store, project_id="proj-cluster", project_path=project_root, session_id=None)
+    run_id = _create_run(
+        store, project_id="proj-cluster", project_path=project_root, session_id=None
+    )
     monkeypatch.setattr(
         local_runtime,
         "load_turnsets_for_run",
@@ -480,7 +483,9 @@ def test_correction_learning_persists_pcr_fragments(tmp_path, monkeypatch):
         recovery_message="Inspect the failing request payload and patch the auth branch before retrying.",
         recovery_command="rg -n refresh_token src/auth.py tests/test_auth.py",
     )
-    run_id = _create_run(store, project_id="proj-correct", project_path=project_root, session_id=None)
+    run_id = _create_run(
+        store, project_id="proj-correct", project_path=project_root, session_id=None
+    )
     monkeypatch.setattr(
         local_runtime,
         "load_turnsets_for_run",
@@ -521,7 +526,9 @@ def test_distilled_skill_metadata_includes_governance(tmp_path, monkeypatch):
         recovery_message="Inspect the failing refresh request and patch the auth branch before retrying.",
         recovery_command="rg -n refresh_token src/auth.py tests/test_auth.py",
     )
-    run_id = _create_run(store, project_id="proj-governance", project_path=project_root, session_id=None)
+    run_id = _create_run(
+        store, project_id="proj-governance", project_path=project_root, session_id=None
+    )
     monkeypatch.setattr(
         local_runtime,
         "load_turnsets_for_run",
@@ -570,9 +577,13 @@ def test_curation_ignores_superseded_cluster_operators(tmp_path, monkeypatch):
         lambda config, store: [auth_a, auth_b],
     )
 
-    first_run = _create_run(store, project_id="proj-sup", project_path=project_root, session_id=None)
+    first_run = _create_run(
+        store, project_id="proj-sup", project_path=project_root, session_id=None
+    )
     local_runtime.run_local_pipeline(first_run, store=store)
-    second_run = _create_run(store, project_id="proj-sup", project_path=project_root, session_id=None)
+    second_run = _create_run(
+        store, project_id="proj-sup", project_path=project_root, session_id=None
+    )
     second_outputs = local_runtime.run_local_pipeline(second_run, store=store)
 
     curation = local_runtime.curate_local_wisdom(
@@ -589,7 +600,10 @@ def test_curation_ignores_superseded_cluster_operators(tmp_path, monkeypatch):
     }
     assert curation.operator_plan
     assert all(item.operator_id not in superseded_ids for item in curation.operator_plan)
-    assert all(item.source_artifact == second_outputs.pending_skills[0].skill_name for item in curation.operator_plan)
+    assert all(
+        item.source_artifact == second_outputs.pending_skills[0].skill_name
+        for item in curation.operator_plan
+    )
 
 
 def test_local_pipeline_status_and_stop_are_persisted(tmp_path, monkeypatch):
@@ -634,7 +648,9 @@ def test_invalid_llm_response_records_failure_artifacts_and_inspect_output(
     project_root.mkdir()
     store = LocalStore()
     turn_set = _make_turnset("bad-analyst", tmp_path / "collector" / "bad-analyst", project_root)
-    run_id = _create_run(store, project_id="proj-bad-analyst", project_path=project_root, session_id=None)
+    run_id = _create_run(
+        store, project_id="proj-bad-analyst", project_path=project_root, session_id=None
+    )
     store.set_run_pid(run_id, __import__("os").getpid())
     monkeypatch.setattr(local_runtime, "create_llm_client", lambda: InvalidAnalystLLM())
     monkeypatch.setattr(local_runtime, "load_turnsets_for_run", lambda config, store: [turn_set])
@@ -677,11 +693,25 @@ def test_install_skill_from_local_source_path(tmp_path, monkeypatch):
 
     from ratchet.client.api.protocol import SkillRefItem
 
-    result = install_skill(
-        SkillRefItem(name="sample-skill", path=str(source), url="")
-    )
+    result = install_skill(SkillRefItem(name="sample-skill", path=str(source), url=""))
     assert result == "installed"
     assert get_skill_path("sample-skill") is not None
+
+
+def test_install_skill_noops_when_source_is_destination(tmp_path, monkeypatch):
+    data_root = tmp_path / "data"
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(data_root))
+    source = data_root / "skills" / "sample-skill"
+    source.mkdir(parents=True)
+    skill_md = source / "SKILL.md"
+    skill_md.write_text("# Already Installed\n", encoding="utf-8")
+
+    from ratchet.client.api.protocol import SkillRefItem
+
+    result = install_skill(SkillRefItem(name="sample-skill", path=str(source), url=""))
+
+    assert result == "installed"
+    assert skill_md.read_text(encoding="utf-8") == "# Already Installed\n"
 
 
 def test_parse_llm_json_accepts_fenced_consolidator_payload():

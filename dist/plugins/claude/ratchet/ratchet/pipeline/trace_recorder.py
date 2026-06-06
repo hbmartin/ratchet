@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
+import os
 import time
 from collections.abc import Iterator
 from typing import Any
 
 from ratchet.pipeline.llm import BaseLocalLLM
 from ratchet.pipeline.store import LocalStore
+
+
+def _verbose_embedding_traces() -> bool:
+    return os.environ.get("RATCHET_TRACE_VERBOSE_EMBEDDINGS") == "1"
 
 
 class PipelineTraceRecorder:
@@ -88,15 +94,18 @@ class TracedLocalLLM(BaseLocalLLM):
                 payload={"text_count": len(texts)},
             )
             raise
-        response_text = json.dumps(
-            {
-                "vector_count": len(vectors),
-                "dimensions": len(vectors[0]) if vectors else 0,
-                "vectors": vectors,
-            },
-            indent=2,
-            ensure_ascii=False,
-        )
+        vector_digest = hashlib.sha256(
+            json.dumps(vectors, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        vector_dimensions = sorted({len(vector) for vector in vectors})
+        response_payload: dict[str, Any] = {
+            "vector_count": len(vectors),
+            "dimensions": vector_dimensions,
+            "vectors_sha256": vector_digest,
+        }
+        if _verbose_embedding_traces():
+            response_payload["vectors"] = vectors
+        response_text = json.dumps(response_payload, indent=2, ensure_ascii=False)
         self._recorder.store.record_llm_call(
             self._recorder.run_id,
             label=label,
@@ -107,7 +116,12 @@ class TracedLocalLLM(BaseLocalLLM):
             status="ok",
             prompt_text=prompt_text,
             response_text=response_text,
-            payload={"text_count": len(texts)},
+            payload={
+                "text_count": len(texts),
+                "vector_count": len(vectors),
+                "dimensions": vector_dimensions,
+                "vectors_sha256": vector_digest,
+            },
         )
         return vectors
 

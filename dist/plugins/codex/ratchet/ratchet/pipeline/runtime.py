@@ -1927,6 +1927,10 @@ def distill_cluster(
         author=get_author(),
         version=DEFAULT_VERSION,
         tags=keywords[:4],
+        validation_level=strategy_governance["validation_level"],
+        trust_tier=strategy_governance["trust_tier"],
+        safety_gate_status=strategy_governance["safety_gate_status"],
+        safety_gate_reason=strategy_governance["safety_gate_reason"],
     )
     artifact_payloads = [
         {
@@ -2584,6 +2588,10 @@ def distill_session(
         author=get_author(),
         version=DEFAULT_VERSION,
         tags=keywords[:4],
+        validation_level=strategy_governance["validation_level"],
+        trust_tier=strategy_governance["trust_tier"],
+        safety_gate_status=strategy_governance["safety_gate_status"],
+        safety_gate_reason=strategy_governance["safety_gate_reason"],
     )
     artifact_payloads = [
         {

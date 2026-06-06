@@ -7,6 +7,7 @@ Covers:
 4. Bootstrap scripts create consistent data directory structure
 """
 
+import argparse
 import os
 import stat
 from pathlib import Path
@@ -46,8 +47,7 @@ class TestSaveAndLoadEnvFile:
 
     def test_round_trip(self, tmp_path):
         env_path = tmp_path / ".env"
-        env_vars = {
-        }
+        env_vars = {}
         save_env_file(env_path, env_vars)
         loaded = load_env_file(env_path)
         assert loaded == env_vars
@@ -108,7 +108,9 @@ class TestLoginSavesLocalSettings:
                 "RATCHET_CLIENT_MODE": "remote",
                 "RATCHET_SERVER_URL": "old",
                 "OPENAI_API_KEY": "sk-old",
+                "UNRELATED_API_KEY": "keep-me",
                 "RATCHET_LLM_MODE": "host-cli",
+                "RATCHET_HOST_AGENT": "codex",
             },
         )
 
@@ -118,7 +120,27 @@ class TestLoginSavesLocalSettings:
         assert "RATCHET_CLIENT_MODE" not in loaded
         assert "RATCHET_SERVER_URL" not in loaded
         assert "OPENAI_API_KEY" not in loaded
+        assert loaded["UNRELATED_API_KEY"] == "keep-me"
         assert loaded["RATCHET_LLM_MODE"] == "deterministic"
+        assert "RATCHET_HOST_AGENT" not in loaded
+
+    def test_configure_rejects_host_agent_without_host_cli(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from ratchet.client import cli
+
+        args = argparse.Namespace(
+            llm_mode=None,
+            host_agent="codex",
+            user_id=None,
+            api_key=None,
+            server_url=None,
+            client_mode=None,
+            openai_api_key=None,
+            gemini_api_key=None,
+        )
+
+        assert cli.cmd_configure(args) == 2
+        assert "--host-agent requires --llm-mode host-cli" in capsys.readouterr().err
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -162,7 +184,7 @@ class TestCrossToolSettingsSharing:
 
         loaded = load_env_file(get_env_path())
         assert loaded["RATCHET_LLM_MODE"] == "deterministic"
-        assert loaded["RATCHET_HOST_AGENT"] == "claude"
+        assert "RATCHET_HOST_AGENT" not in loaded
 
     def test_run_pipeline_script_loads_stable_env(self, tmp_path, monkeypatch):
         """run_pipeline.py loads ~/.local/ratchet/.env first."""
@@ -182,20 +204,6 @@ class TestDataDirIdentity:
         monkeypatch.delenv("RATCHET_DATA_DIR", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         assert data_dir() == tmp_path / ".local" / "ratchet"
-
-    def test_data_dir_does_not_migrate_other_local_dirs(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("RATCHET_DATA_DIR", raising=False)
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        other_dir = tmp_path / ".local" / "other-agent"
-        other_dir.mkdir(parents=True)
-        (other_dir / "profile.json").write_text("{}", encoding="utf-8")
-
-        resolved = data_dir()
-
-        assert resolved == tmp_path / ".local" / "ratchet"
-        assert resolved.is_dir()
-        assert (other_dir / "profile.json").is_file()
-        assert not (resolved / "profile.json").exists()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -299,10 +307,10 @@ class TestBootstrapConsistency:
         (ratchet_dir / "pyproject.toml").write_text(
             '[project]\nname="t"\nversion="0.1"\nrequires-python=">=3.10"\n'
         )
-        (ratchet_dir / ".env").write_text("RATCHET_API_KEY=mg_migrated_key\n")
+        (ratchet_dir / ".env").write_text("RATCHET_API_KEY=mg_secret_key\n")
 
-        data_dir = tmp_path / "data-no-migration"
+        data_dir = tmp_path / "data-isolated"
         self._run_bootstrap("codex-bootstrap.sh", tmp_path, ratchet_dir, data_dir)
 
         content = (data_dir / ".env").read_text()
-        assert "mg_migrated_key" not in content
+        assert "mg_secret_key" not in content

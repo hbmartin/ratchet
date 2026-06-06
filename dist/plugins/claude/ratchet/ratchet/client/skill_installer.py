@@ -15,6 +15,7 @@ from ratchet.client.dirs import data_dir
 
 logger = logging.getLogger(__name__)
 
+
 def skills_dir() -> Path:
     """Skills directory: {data_dir}/skills/."""
     d = data_dir() / "skills"
@@ -40,6 +41,10 @@ def install_skill(skill: SkillRefItem) -> str:
             source_dir = source_path
         if not (source_dir / "SKILL.md").exists():
             raise ValueError(f"Local skill source is missing SKILL.md: {source_dir}")
+        source_dir = source_dir.resolve()
+        if source_dir == dest:
+            logger.info("Skill %s is already installed at destination", skill.name)
+            return "installed"
         if dest.exists():
             shutil.rmtree(dest)
         shutil.copytree(source_dir, dest)

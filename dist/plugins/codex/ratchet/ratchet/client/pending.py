@@ -117,6 +117,10 @@ class PendingStrategyInfo:
     description: str
     path: str
     category: str | None = None
+    validation_level: str = "observed"
+    trust_tier: str = "provisional"
+    safety_gate_status: str = "review_required"
+    safety_gate_reason: str = ""
     author: str = ""
     version: str = ""
     tags: list[str] = field(default_factory=list)
@@ -169,6 +173,7 @@ from ratchet.client.skill_utils import (
     DEFAULT_VERSION,
     canonical_skill_name,
     ensure_skill_frontmatter,
+    ensure_strategy_frontmatter,
     get_author,
     normalize_pending_skill_markdown,
     parse_frontmatter,
@@ -287,13 +292,33 @@ def save_outputs_to_pending(
         strat_name = _sanitize_name(strat.strategy_name)
         PENDING_STRATEGIES_DIR.mkdir(parents=True, exist_ok=True)
         path = PENDING_STRATEGIES_DIR / f"{strat_name}.md"
-        path.write_text(strat.content, encoding="utf-8")
+        strategy_content = ensure_strategy_frontmatter(
+            strat.content,
+            strat.category or "local-runtime",
+            author=strat.author or get_author(),
+            version=strat.version or DEFAULT_VERSION,
+            tags=strat.tags,
+            extra_frontmatter={
+                "validation_level": strat.validation_level,
+                "trust_tier": strat.trust_tier,
+                "safety_gate_status": strat.safety_gate_status,
+                "safety_gate_reason": strat.safety_gate_reason,
+            },
+        )
+        path.write_text(strategy_content, encoding="utf-8")
         result.strategies.append(
             PendingStrategyInfo(
                 name=strat_name,
-                description=_truncate(_extract_heading(strat.content)),
+                description=_truncate(_extract_heading(strategy_content)),
                 path=str(path),
                 category=strat.category,
+                validation_level=strat.validation_level,
+                trust_tier=strat.trust_tier,
+                safety_gate_status=strat.safety_gate_status,
+                safety_gate_reason=strat.safety_gate_reason,
+                author=strat.author,
+                version=strat.version,
+                tags=strat.tags,
             )
         )
 
@@ -331,7 +356,17 @@ def _parse_yaml_frontmatter(content: str) -> dict[str, str | list[str]]:
         return {}
 
     result: dict[str, str | list[str]] = {}
-    for key in ("description", "author", "version", "generated_at"):
+    for key in (
+        "description",
+        "author",
+        "version",
+        "generated_at",
+        "category",
+        "validation_level",
+        "trust_tier",
+        "safety_gate_status",
+        "safety_gate_reason",
+    ):
         value = skill_frontmatter_value(fm, key, fm.get(key, ""))
         if isinstance(value, str) and value:
             result[key] = value
@@ -455,6 +490,10 @@ def get_pending_strategies() -> list[PendingStrategyInfo]:
                 description=_truncate(description),
                 path=str(strategy_file),
                 category=str(fm.get("category", "")) or None,
+                validation_level=str(fm.get("validation_level", "observed")),
+                trust_tier=str(fm.get("trust_tier", "provisional")),
+                safety_gate_status=str(fm.get("safety_gate_status", "review_required")),
+                safety_gate_reason=str(fm.get("safety_gate_reason", "")),
                 author=str(fm.get("author", "")),
                 version=str(fm.get("version", "")),
                 tags=fm_tags if isinstance(fm_tags, list) else [],

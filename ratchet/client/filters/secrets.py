@@ -28,7 +28,7 @@ DEFAULT_PATTERNS: list[tuple[re.Pattern, str]] = [
     ),
     # 3. Authorization headers
     (
-        re.compile(r"(Authorization:\s*(?:Bearer\s+)?)\S+", re.IGNORECASE),
+        re.compile(r"(Authorization:\s*)[^\r\n]+", re.IGNORECASE),
         r"\1****",
     ),
     # 4. URLs with embedded credentials

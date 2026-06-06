@@ -64,6 +64,7 @@ fi
 if [ ! -f "$RATCHET_DIR/.env" ]; then
     touch "$RATCHET_DIR/.env"
 fi
+set -a && . "$RATCHET_DIR/.env" 2>/dev/null && set +a
 
 if [ ! -x "$RATCHET_DIR/.venv/bin/python" ]; then
     uv sync --directory "$RATCHET_DIR" --quiet 2>/dev/null || true

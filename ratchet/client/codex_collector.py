@@ -85,8 +85,8 @@ def handle_stop(input_data: dict[str, Any]) -> dict[str, Any]:
         project_id = get_project_folder_name(project_dir) if project_dir else "unknown"
         client = create_client()
         client.upload_trajectory(turn_set=turn_set, project_id=project_id)
-    except Exception:
-        logger.debug("Codex Stop import skipped", exc_info=True)
+    except Exception as exc:
+        logger.warning("Codex Stop import skipped: %s: %s", type(exc).__name__, exc)
     return {}
 
 

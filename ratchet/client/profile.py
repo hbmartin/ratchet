@@ -5,10 +5,13 @@ creating circular imports between the CLI and client layers.
 """
 
 import json
+import logging
 from pathlib import Path
 
 from ratchet.client.api.protocol import UserProfile
 from ratchet.client.utils.io import atomic_write
+
+logger = logging.getLogger(__name__)
 
 
 def get_profile_path() -> Path:
@@ -23,8 +26,12 @@ def load_profile() -> UserProfile:
     path = get_profile_path()
     if not path.exists():
         return UserProfile()
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return UserProfile(**data)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return UserProfile(**data)
+    except (OSError, json.JSONDecodeError, ValueError):
+        logger.warning("Ignoring unreadable or corrupt profile file: %s", path, exc_info=True)
+        return UserProfile()
 
 
 def save_profile(profile: UserProfile | dict) -> None:

@@ -346,7 +346,7 @@ def test_codex_stop_import_is_best_effort(repo_root: Path, test_env: dict[str, s
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
-    assert result.stderr == ""
+    assert "Codex Stop import skipped" in result.stderr
     assert elapsed < _hook_config(repo_root, "Stop", host="codex")["timeout"]
 
 
@@ -367,7 +367,11 @@ def test_codex_session_start_auto_installs_approved_items(
     )
     pending_strategy = data_dir / "data" / "pending-strategies" / "auth-refresh.md"
     pending_strategy.parent.mkdir(parents=True, exist_ok=True)
-    pending_strategy.write_text("# Auth Refresh Strategy\nRetry once after checking the failing request.\n", encoding="utf-8")
+    pending_strategy.write_text(
+        "---\nsafety_gate_status: approved\n---\n\n"
+        "# Auth Refresh Strategy\nRetry once after checking the failing request.\n",
+        encoding="utf-8",
+    )
 
     result, _elapsed = _run_hook(
         repo_root,
