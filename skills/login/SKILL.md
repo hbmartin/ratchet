@@ -12,7 +12,7 @@ for normal use.
 ## Setup
 
 ```bash
-MEGA_DIR="${CLAUDE_PLUGIN_ROOT:-$(cat ~/.local/share/mega-code/plugin-root 2>/dev/null)}"
+MEGA_DIR="${CLAUDE_PLUGIN_ROOT:-$(cat ~/.local/ratchetai/plugin-root 2>/dev/null)}"
 set -a && . "$MEGA_DIR/.env" 2>/dev/null && set +a
 ```
 
@@ -31,7 +31,7 @@ uv run --directory "$MEGA_DIR" mega-code configure --openai-api-key <your_key>
 ## Verify
 
 ```bash
-grep -E "^(GEMINI_API_KEY|OPENAI_API_KEY)=" "$HOME/.local/share/mega-code/.env" \
+grep -E "^(GEMINI_API_KEY|OPENAI_API_KEY)=" "$HOME/.local/ratchetai/.env" \
   | sed -E 's/(=.*).*/=***/'
 ```
 

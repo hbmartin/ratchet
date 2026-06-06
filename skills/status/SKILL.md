@@ -11,7 +11,7 @@ Show current MEGA-Code status and pending items.
 ## Setup
 
 ```bash
-MEGA_DIR="${CLAUDE_PLUGIN_ROOT:-$(cat ~/.local/share/mega-code/plugin-root 2>/dev/null)}"
+MEGA_DIR="${CLAUDE_PLUGIN_ROOT:-$(cat ~/.local/ratchetai/plugin-root 2>/dev/null)}"
 set -a && . "$MEGA_DIR/.env" 2>/dev/null && set +a
 uv run --directory "$MEGA_DIR" python -m mega_code.client.check_auth
 ```
@@ -67,5 +67,5 @@ fi
 
 | Type | Pending Location | Installed Location |
 |------|------------------|-------------------|
-| Skills | `~/.local/share/mega-code/data/pending-skills/{name}/` | `{data_dir}/skills/{name}/SKILL.md` |
-| Strategies | `~/.local/share/mega-code/data/pending-strategies/{name}.md` | `.claude/rules/mega-code/{name}.md` |
+| Skills | `~/.local/ratchetai/data/pending-skills/{name}/` | `{data_dir}/skills/{name}/SKILL.md` |
+| Strategies | `~/.local/ratchetai/data/pending-strategies/{name}.md` | `.claude/rules/mega-code/{name}.md` |

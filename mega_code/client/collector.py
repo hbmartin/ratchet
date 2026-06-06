@@ -371,12 +371,12 @@ def _upload_trajectory(session_id: str, project_dir: str | None) -> None:
 def _load_env():
     """Load credentials from the stable data-root .env, then overlay plugin .env.
 
-    Credentials are stored in ~/.local/share/mega-code/.env (a fixed, version-independent
+    Credentials are stored in ~/.local/ratchetai/.env (a fixed, version-independent
     path that survives plugin updates).  The versioned plugin .env may still hold
     non-secret overrides (e.g. MEGA_CODE_SERVER_URL for dev/staging).
 
     Search order:
-    1. ~/.local/share/mega-code/.env  — stable credential store (always loaded first)
+    1. ~/.local/ratchetai/.env       — stable credential store (always loaded first)
     2. CLAUDE_PLUGIN_ROOT/.env       — versioned plugin dir (loaded after, so it can
        override non-secret config without clobbering credentials)
     3. Repo root .env                — dev mode fallback

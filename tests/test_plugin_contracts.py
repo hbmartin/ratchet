@@ -8,7 +8,7 @@ from pathlib import Path
 
 import yaml
 
-MEGA_DIR_PATTERN = 'MEGA_DIR="${CLAUDE_PLUGIN_ROOT:-$(cat ~/.local/share/mega-code/plugin-root 2>/dev/null)}"'
+MEGA_DIR_PATTERN = 'MEGA_DIR="${CLAUDE_PLUGIN_ROOT:-$(cat ~/.local/ratchetai/plugin-root 2>/dev/null)}"'
 ENV_LOAD_SNIPPET = 'set -a && . "$MEGA_DIR/.env" 2>/dev/null && set +a'
 TOP_LEVEL_REF_RE = re.compile(r"(?<![A-Za-z0-9_])((?:\.claude-plugin|hooks|mega_code|scripts|skills)/[A-Za-z0-9._/-]+)")
 MEGA_DIR_REF_RE = re.compile(r"\$MEGA_DIR/([A-Za-z0-9._/-]+)")

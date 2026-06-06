@@ -33,7 +33,7 @@ def sync_codex_trajectories(
 
     Args:
         project_dir: Local mega-code project data folder
-            (e.g. ~/.local/share/mega-code/projects/mega-code_b39e0992/).
+            (e.g. ~/.local/ratchetai/projects/mega-code_b39e0992/).
         client: Authenticated client (typically MegaCodeRemote).
         project_id: Project identifier for the server.
         project_path: Actual project cwd for Codex filtering.

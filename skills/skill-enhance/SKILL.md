@@ -11,7 +11,7 @@ handles test generation, grading, and enhancement; isolated A/B completions run 
 ## Setup
 
 ```bash
-MEGA_DIR="${CLAUDE_PLUGIN_ROOT:-$(cat ~/.local/share/mega-code/plugin-root 2>/dev/null)}"
+MEGA_DIR="${CLAUDE_PLUGIN_ROOT:-$(cat ~/.local/ratchetai/plugin-root 2>/dev/null)}"
 set -a && . "$MEGA_DIR/.env" 2>/dev/null && set +a
 uv run --directory "$MEGA_DIR" python -m mega_code.client.check_auth
 ```
@@ -252,7 +252,7 @@ with the enhanced version (semantic version bumped, `generated_at` refreshed, RO
 **Store on server** (creates a new DB row for the canonical enhanced skill name with the bumped semantic version and lineage metadata, while preserving the original pending-skill folder name as the lineage parent):
 
 ```bash
-set -a && . ~/.local/share/mega-code/.env 2>/dev/null && set +a
+set -a && . ~/.local/ratchetai/.env 2>/dev/null && set +a
 export MEGA_CODE_CLIENT_MODE=${MEGA_CODE_CLIENT_MODE:-remote}
 uv run --directory "$MEGA_DIR" python -m mega_code.client.skill_enhance_helper \
     store-skill \

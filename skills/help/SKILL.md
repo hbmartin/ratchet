@@ -23,8 +23,8 @@ allowed-tools: Read
 
 | Type | Pending Location | Installed Location |
 |------|------------------|-------------------|
-| Skills | `~/.local/share/mega-code/data/pending-skills/{name}/` | `.claude/skills/{name}/SKILL.md` |
-| Strategies | `~/.local/share/mega-code/data/pending-strategies/{name}.md` | `.claude/rules/mega-code/{name}.md` |
+| Skills | `~/.local/ratchetai/data/pending-skills/{name}/` | `.claude/skills/{name}/SKILL.md` |
+| Strategies | `~/.local/ratchetai/data/pending-strategies/{name}.md` | `.claude/rules/mega-code/{name}.md` |
 | Curated Skills | — | `{data_dir}/skills/{name}/SKILL.md` |
 | Curations | `{data_dir}/curations/pending/{session_id}.json` | `{data_dir}/curations/completed/{session_id}.json` |
 
@@ -33,7 +33,7 @@ allowed-tools: Read
 Generated skills follow this structure:
 
 ```
-~/.local/share/mega-code/data/pending-skills/{skill-name}/
+~/.local/ratchetai/data/pending-skills/{skill-name}/
 ├── SKILL.md        # Main skill content
 ├── injection.json  # Auto-trigger rules
 ├── evidence.json   # Source evidence

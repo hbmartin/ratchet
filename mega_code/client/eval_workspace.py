@@ -6,7 +6,7 @@ replacing the old /tmp-based approach with structured iteration dirs.
 
 Directory structure::
 
-    ~/.local/share/mega-code/data/skill-enhance/{skill-name}/
+    ~/.local/ratchetai/data/skill-enhance/{skill-name}/
       iteration-1/
         original-skill.md     # backup of SKILL.md before enhancement
         test-cases.json

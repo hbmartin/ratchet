@@ -2,7 +2,7 @@
 """Check for pending skills and strategies; output highlighted notification for Claude Code.
 
 This script is called via UserPromptSubmit hook to inject context about pending items.
-It scans ~/.local/share/mega-code/data/pending-{skills,strategies}/ directories.
+It scans ~/.local/ratchetai/data/pending-{skills,strategies}/ directories.
 
 Output format follows Claude Code hooks reference:
 https://code.claude.com/docs/en/hooks
@@ -31,7 +31,7 @@ def _load_env():
     """Load credentials from the stable data-root .env, then overlay plugin .env.
 
     Search order (same as collector.py):
-    1. ~/.local/share/mega-code/.env  — stable credential store (always loaded first)
+    1. ~/.local/ratchetai/.env       — stable credential store (always loaded first)
     2. CLAUDE_PLUGIN_ROOT/.env       — versioned plugin dir
     3. Repo root .env                — dev mode fallback
     """

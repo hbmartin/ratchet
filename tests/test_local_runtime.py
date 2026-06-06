@@ -501,3 +501,105 @@ def test_install_skill_from_local_source_path(tmp_path, monkeypatch):
     )
     assert result == "installed"
     assert get_skill_path("sample-skill") is not None
+
+
+def test_parse_llm_json_accepts_fenced_consolidator_payload():
+    raw = """```json
+{
+  "summary": "Consolidated auth workflow.",
+  "applicability": ["Auth refresh fixes."],
+  "canonical_workflow": [],
+  "verification_loop": [],
+  "failure_guards": [],
+  "strategy": {
+    "delta_rules": [],
+    "correction_patterns": [],
+    "when_to_retry": [],
+    "when_to_stop": [],
+    "support_signals": []
+  },
+  "memory_fragments": [],
+  "keywords": ["auth"]
+}
+```"""
+
+    parsed = local_runtime._parse_llm_json(raw, "CONSOLIDATOR", local_runtime._ConsolidatedCluster)
+
+    assert parsed.summary == "Consolidated auth workflow."
+    assert parsed.keywords == ["auth"]
+
+
+def test_parse_llm_json_repairs_invalid_escape_sequences_in_strings():
+    raw = r"""{
+  "proposals": [
+    {
+      "target": "canonical_workflow",
+      "title": "Normalize vendor\_name before diffing",
+      "rule": "Keep vendor\_name escaped in JSON output.",
+      "applicability": "When underscores appear in API field names.",
+      "evidence_session_ids": ["sess-1"],
+      "support_count": 1,
+      "examples": ["vendor\_name mismatch"]
+    }
+  ]
+}"""
+
+    parsed = local_runtime._parse_llm_json(raw, "ERROR_ANALYST", local_runtime._AnalystPass)
+
+    assert parsed.proposals[0].title == r"Normalize vendor\_name before diffing"
+    assert parsed.proposals[0].examples == [r"vendor\_name mismatch"]
+
+
+def test_parse_llm_json_accepts_bare_analyst_proposal_lists():
+    raw = """[
+  {
+    "target": "canonical_workflow",
+    "title": "Use the project build command",
+    "rule": "Run the project build before finalizing.",
+    "applicability": "When the repo has a build step.",
+    "evidence_session_ids": ["sess-1"],
+    "support_count": 1,
+    "examples": ["pnpm build"]
+  }
+]"""
+
+    parsed = local_runtime._parse_llm_json(raw, "ERROR_ANALYST", local_runtime._AnalystPass)
+
+    assert len(parsed.proposals) == 1
+    assert parsed.proposals[0].title == "Use the project build command"
+
+
+def test_parse_llm_json_coerces_consolidator_dict_items_in_string_lists():
+    raw = """{
+  "summary": "Consolidated workflow.",
+  "applicability": [{"title": "Fix form build failures."}],
+  "canonical_workflow": [],
+  "verification_loop": [
+    {
+      "title": "Run the form build",
+      "rule": "pnpm build"
+    }
+  ],
+  "failure_guards": [
+    {
+      "rule": "Stop after repeated identical build failures."
+    }
+  ],
+  "strategy": {
+    "delta_rules": [{"rule": "Prefer the focused build before a full test run."}],
+    "correction_patterns": [],
+    "when_to_retry": [],
+    "when_to_stop": [],
+    "support_signals": []
+  },
+  "memory_fragments": [],
+  "keywords": [{"name": "forms"}]
+}"""
+
+    parsed = local_runtime._parse_llm_json(raw, "CONSOLIDATOR", local_runtime._ConsolidatedCluster)
+
+    assert parsed.applicability == ["Fix form build failures."]
+    assert parsed.verification_loop == ["pnpm build"]
+    assert parsed.failure_guards == ["Stop after repeated identical build failures."]
+    assert parsed.strategy.delta_rules == ["Prefer the focused build before a full test run."]
+    assert parsed.keywords == ["forms"]

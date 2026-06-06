@@ -1011,13 +1011,179 @@ def _prompt_payload(marker: str, payload: dict[str, Any], schema_hint: str) -> s
     )
 
 
+def _strip_json_code_fence(text: str) -> str:
+    match = re.match(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", text, flags=re.IGNORECASE | re.DOTALL)
+    return match.group(1).strip() if match else text.strip()
+
+
+def _extract_first_json_value(text: str) -> str | None:
+    start = next((idx for idx, char in enumerate(text) if char in "{["), None)
+    if start is None:
+        return None
+    stack = ["}" if text[start] == "{" else "]"]
+    in_string = False
+    idx = start + 1
+    while idx < len(text):
+        char = text[idx]
+        if in_string:
+            if char == "\\":
+                idx += 2
+                continue
+            if char == '"':
+                in_string = False
+            idx += 1
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{[":
+            stack.append("}" if char == "{" else "]")
+        elif char in "}]":
+            if not stack or char != stack.pop():
+                return None
+            if not stack:
+                return text[start : idx + 1].strip()
+        idx += 1
+    return None
+
+
+def _repair_invalid_json_escapes(text: str) -> str:
+    """Escape stray backslashes inside JSON strings without changing valid escapes."""
+    hex_digits = set("0123456789abcdefABCDEF")
+    repaired: list[str] = []
+    in_string = False
+    idx = 0
+    while idx < len(text):
+        char = text[idx]
+        if not in_string:
+            repaired.append(char)
+            if char == '"':
+                in_string = True
+            idx += 1
+            continue
+        if char == '"':
+            repaired.append(char)
+            in_string = False
+            idx += 1
+            continue
+        if char != "\\":
+            repaired.append(char)
+            idx += 1
+            continue
+        next_char = text[idx + 1] if idx + 1 < len(text) else ""
+        if next_char in {'"', "\\", "/", "b", "f", "n", "r", "t"}:
+            repaired.append("\\")
+            repaired.append(next_char)
+            idx += 2
+            continue
+        if next_char == "u":
+            codepoint = text[idx + 2 : idx + 6]
+            if len(codepoint) == 4 and all(digit in hex_digits for digit in codepoint):
+                repaired.append("\\")
+                repaired.append("u")
+                repaired.extend(codepoint)
+                idx += 6
+                continue
+        repaired.append("\\\\")
+        idx += 1
+    return "".join(repaired)
+
+
+def _iter_json_candidates(raw_text: str) -> list[str]:
+    stripped = raw_text.strip()
+    candidates: list[str] = []
+    if stripped:
+        candidates.append(stripped)
+    unfenced = _strip_json_code_fence(raw_text)
+    if unfenced and unfenced not in candidates:
+        candidates.append(unfenced)
+    for candidate in list(candidates):
+        extracted = _extract_first_json_value(candidate)
+        if extracted and extracted not in candidates:
+            candidates.append(extracted)
+    return candidates or [raw_text]
+
+
+def _coerce_llm_payload(payload: Any, model_cls: type[BaseModel]) -> Any:
+    if model_cls is _AnalystPass and isinstance(payload, list):
+        return {"proposals": payload}
+    if model_cls is _ConsolidatedCluster and isinstance(payload, dict):
+        normalized = dict(payload)
+        for field in ("applicability", "verification_loop", "failure_guards", "keywords"):
+            normalized[field] = _coerce_string_list(normalized.get(field, []))
+        workflow = normalized.get("canonical_workflow", [])
+        if isinstance(workflow, list):
+            normalized["canonical_workflow"] = [_coerce_workflow_item(item) for item in workflow if item]
+        strategy = normalized.get("strategy", {})
+        if isinstance(strategy, dict):
+            normalized_strategy = dict(strategy)
+            for field in (
+                "delta_rules",
+                "correction_patterns",
+                "when_to_retry",
+                "when_to_stop",
+                "support_signals",
+            ):
+                normalized_strategy[field] = _coerce_string_list(normalized_strategy.get(field, []))
+            normalized["strategy"] = normalized_strategy
+        return normalized
+    return payload
+
+
+def _coerce_string_item(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ("rule", "title", "name", "procedure", "text", "summary"):
+            item = value.get(key)
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+    return str(value).strip() if value is not None else ""
+
+
+def _coerce_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in (_coerce_string_item(entry) for entry in value) if item]
+
+
+def _coerce_workflow_item(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    item = _coerce_string_item(value)
+    return {"title": item, "rule": item} if item else {}
+
+
 def _parse_llm_json(raw_text: str, label: str, model_cls: type[BaseModel]) -> BaseModel:
-    try:
-        return model_cls.model_validate_json(raw_text)
-    except ValidationError as exc:
-        raise ValueError(f"{label} returned schema-invalid JSON: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{label} returned invalid JSON: {exc}") from exc
+    last_parse_error: json.JSONDecodeError | None = None
+    last_schema_error: ValidationError | None = None
+    for candidate in _iter_json_candidates(raw_text):
+        variants = [candidate]
+        repaired = _repair_invalid_json_escapes(candidate)
+        if repaired != candidate:
+            variants.append(repaired)
+        for variant in variants:
+            try:
+                payload = json.loads(variant)
+            except json.JSONDecodeError as exc:
+                last_parse_error = exc
+                continue
+            if isinstance(payload, str):
+                nested = payload.strip()
+                if nested.startswith(("{", "[")):
+                    try:
+                        payload = json.loads(nested)
+                    except json.JSONDecodeError as exc:
+                        last_parse_error = exc
+                        continue
+            try:
+                return model_cls.model_validate(_coerce_llm_payload(payload, model_cls))
+            except ValidationError as exc:
+                last_schema_error = exc
+    if last_schema_error is not None:
+        raise ValueError(f"{label} returned schema-invalid JSON: {last_schema_error}") from last_schema_error
+    if last_parse_error is not None:
+        raise ValueError(f"{label} returned invalid JSON: {last_parse_error}") from last_parse_error
+    raise ValueError(f"{label} returned empty JSON payload")
 
 
 def _proposal_lookup_key(target: str, title: str) -> tuple[str, str]:

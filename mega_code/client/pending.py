@@ -822,6 +822,9 @@ def format_pipeline_notification(result: PendingResult) -> str:
     Delegates to format_review_notification() for the review workflow,
     with a pipeline-specific header and preamble.
     """
+    if result.errors and not result.has_outputs():
+        return format_error_notification("\n".join(result.errors))
+
     if not result.has_outputs():
         return get_no_outputs_notification()
 
