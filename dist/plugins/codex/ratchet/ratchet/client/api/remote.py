@@ -37,7 +37,8 @@ class RatchetRemote(RatchetLocal):
                 "using the local runtime instead."
             )
         if kwargs:
-            logger.debug("Ignoring deprecated remote client arguments: %s", sorted(kwargs))
+            unexpected = ", ".join(sorted(kwargs))
+            raise TypeError(f"Unexpected RatchetRemote argument(s): {unexpected}")
         self._legacy_server_url = server_url or "local"
         super().__init__(
             backend=backend,

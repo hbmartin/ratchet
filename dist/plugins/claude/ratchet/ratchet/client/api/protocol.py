@@ -113,6 +113,16 @@ class PendingStrategyData(BaseModel):
     author: str = ""
     version: str = ""
     tags: list[str] = Field(default_factory=list)
+    validation_level: str = Field(default="observed", description="Validation maturity for this strategy")
+    trust_tier: str = Field(default="provisional", description="Trust tier for this strategy")
+    safety_gate_status: str = Field(
+        default="review_required",
+        description="Whether the strategy is approved to influence future sessions",
+    )
+    safety_gate_reason: str = Field(
+        default="",
+        description="Short explanation for the current safety gate status",
+    )
 
 
 class PendingLessonData(BaseModel):
@@ -194,23 +204,12 @@ class PipelineStatusResult(BaseModel):
 class UserProfile(BaseModel):
     """User profile for personalization.
 
-    Fields language/level/style are set via CLI. Fields eureka/goals/enabled/autoPermission
-    are shared with the MegaEureka VSCode extension.
+    Fields language/level/style are set via the CLI.
     """
 
     language: str | None = Field(None, description="Preferred language (e.g. English, Thai)")
     level: str | None = Field(None, description="Experience level (Beginner, Intermediate, Expert)")
     style: str | None = Field(None, description="Teaching style (Mentor, Formal, Concise)")
-    eureka: bool = Field(True, description="[MegaEureka] Enable learning cards generation")
-    goals: list[str] = Field(
-        default_factory=list, description="[MegaEureka] Learning goals for personalized content"
-    )
-    enabled: bool = Field(True, description="[MegaEureka] Master switch for personalization")
-    auto_permission: bool = Field(
-        False,
-        alias="autoPermission",
-        description="[MegaEureka] Auto-approve bash permissions in hooks",
-    )
 
     model_config = ConfigDict(populate_by_name=True)
 

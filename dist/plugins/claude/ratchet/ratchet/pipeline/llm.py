@@ -28,6 +28,38 @@ class LocalLLMError(ValueError):
     """Raised when a local provider is unavailable or fails."""
 
 
+def _validate_embedding_vectors(
+    vectors: Any,
+    *,
+    expected_count: int | None = None,
+    provider: str = "embedding provider",
+) -> list[list[float]]:
+    if not isinstance(vectors, list):
+        raise LocalLLMError(f"{provider} returned {type(vectors).__name__}; expected a vector list")
+    if expected_count is not None and len(vectors) != expected_count:
+        raise LocalLLMError(
+            f"{provider} returned {len(vectors)} embedding vectors; expected {expected_count}"
+        )
+
+    validated: list[list[float]] = []
+    for index, vector in enumerate(vectors):
+        if isinstance(vector, (str, bytes)) or not isinstance(vector, Iterable):
+            raise LocalLLMError(f"{provider} returned non-vector embedding at index {index}")
+        try:
+            coerced = [float(value) for value in vector]
+        except (TypeError, ValueError) as exc:
+            raise LocalLLMError(
+                f"{provider} returned non-numeric embedding value at index {index}"
+            ) from exc
+        if len(coerced) != _EMBED_DIMENSION:
+            raise LocalLLMError(
+                f"{provider} returned {len(coerced)}-dimension embedding at index {index}; "
+                f"expected {_EMBED_DIMENSION}"
+            )
+        validated.append(coerced)
+    return validated
+
+
 @dataclass(frozen=True)
 class RerankedDocument:
     """A document ranked for retrieval."""
@@ -66,13 +98,21 @@ class BaseLocalLLM:
         *,
         top_k: int | None = None,
     ) -> list[RerankedDocument]:
-        query_vector = self.embed_query(query)
-        document_vectors = self.embed_documents(documents)
+        query_vector = _validate_embedding_vectors(
+            [self.embed_query(query)],
+            expected_count=1,
+            provider=self.provider,
+        )[0]
+        document_vectors = _validate_embedding_vectors(
+            self.embed_documents(documents),
+            expected_count=len(documents),
+            provider=self.provider,
+        )
         ranked = [
             RerankedDocument(
                 index=index,
                 text=document,
-                score=sum(q * d for q, d in zip(query_vector, vector, strict=False)),
+                score=sum(q * d for q, d in zip(query_vector, vector, strict=True)),
             )
             for index, (document, vector) in enumerate(zip(documents, document_vectors, strict=True))
         ]
@@ -250,7 +290,8 @@ class CommandAdapterLLM(BaseLocalLLM):
 
     The generation command receives the prompt on stdin and returns text on
     stdout. The embedding command receives JSON ``{"texts": [...]}`` and
-    returns ``[[...]]``.
+    returns ``[[...]]``. Commands are executed with ``shell=True`` because they
+    are user-defined adapter strings from local configuration.
     """
 
     provider = "command"
@@ -284,7 +325,12 @@ class CommandAdapterLLM(BaseLocalLLM):
         vectors = json.loads(proc.stdout)
         if not isinstance(vectors, list):
             raise LocalLLMError("command embedder did not return a vector list")
-        return [_normalize([float(v) for v in vector]) for vector in vectors]
+        normalized = [_normalize([float(v) for v in vector]) for vector in vectors]
+        return _validate_embedding_vectors(
+            normalized,
+            expected_count=len(texts),
+            provider=self.provider,
+        )
 
     def generate_text(self, prompt: str, *, model: str | None = None) -> str:
         if not self.generation_command:
@@ -321,7 +367,11 @@ class RouterLLM(BaseLocalLLM):
         errors: list[str] = []
         for provider in self.embedding_providers:
             try:
-                return provider.embed_documents(texts)
+                return _validate_embedding_vectors(
+                    provider.embed_documents(texts),
+                    expected_count=len(texts),
+                    provider=provider.provider,
+                )
             except Exception as exc:
                 errors.append(f"{provider.provider}: {exc}")
         raise LocalLLMError("No embedding provider succeeded: " + "; ".join(errors))
@@ -363,7 +413,12 @@ class RouterLLM(BaseLocalLLM):
         raw = self.generate_text(prompt)
         try:
             data = json.loads(raw)
-            ranked_indices = data.get("ranked_indices", data)
+            if isinstance(data, dict):
+                ranked_indices = data.get("ranked_indices")
+            elif isinstance(data, list):
+                ranked_indices = data
+            else:
+                raise ValueError("ranked_indices is not a list")
             if not isinstance(ranked_indices, list):
                 raise ValueError("ranked_indices is not a list")
             seen: set[int] = set()

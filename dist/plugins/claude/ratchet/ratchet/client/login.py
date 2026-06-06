@@ -13,6 +13,13 @@ from ratchet.client.cli import get_env_path, load_env_file, save_env_file
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PROVIDER = "local"
+_LEGACY_CREDENTIAL_KEYS = {
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "OPENAI_API_KEY",
+    "RATCHET_API_KEY",
+    "RATCHET_OPENAI_COMPAT_API_KEY",
+}
 
 
 def _save_local_setup(
@@ -25,11 +32,16 @@ def _save_local_setup(
     env_vars = load_env_file(env_path)
     env_vars.pop("RATCHET_CLIENT_MODE", None)
     env_vars.pop("RATCHET_SERVER_URL", None)
-    for key in list(env_vars):
-        if key.endswith("_API_KEY") or key in {"RATCHET_API_KEY"}:
-            env_vars.pop(key, None)
+    for key in _LEGACY_CREDENTIAL_KEYS:
+        env_vars.pop(key, None)
+
+    resolved_llm_mode = llm_mode or env_vars.get("RATCHET_LLM_MODE")
+    if host_agent and resolved_llm_mode != "host-cli":
+        raise ValueError("--host-agent requires --llm-mode host-cli")
     if llm_mode:
         env_vars["RATCHET_LLM_MODE"] = llm_mode
+    if resolved_llm_mode != "host-cli":
+        env_vars.pop("RATCHET_HOST_AGENT", None)
     if host_agent:
         env_vars["RATCHET_HOST_AGENT"] = host_agent
     env_path.parent.mkdir(parents=True, exist_ok=True)
@@ -134,7 +146,13 @@ def main() -> int:
 
     args = parser.parse_args()
     if args.llm_mode or args.host_agent:
-        env_path, _env_vars = _save_local_setup(llm_mode=args.llm_mode, host_agent=args.host_agent)
+        try:
+            env_path, _env_vars = _save_local_setup(
+                llm_mode=args.llm_mode,
+                host_agent=args.host_agent,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
         print(f"Local settings saved to: {env_path}")
 
     if args.step == "create":

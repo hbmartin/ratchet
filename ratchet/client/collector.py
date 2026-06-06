@@ -45,6 +45,7 @@ from ratchet.client.utils.tracing import get_tracer, setup_tracing
 
 logger = logging.getLogger(__name__)
 
+
 def _validate_env_config() -> list[str]:
     """Return local runtime config warnings.
 
@@ -335,7 +336,7 @@ def _upload_trajectory(session_id: str, project_dir: str | None) -> None:
             result.status,
         )
 
-    except (OSError, ValueError, KeyError, RuntimeError):
+    except Exception:
         # Best-effort: log but don't fail session end
         logger.warning(
             "Failed to store trajectory for session %s",

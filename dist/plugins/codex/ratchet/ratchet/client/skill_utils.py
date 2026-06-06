@@ -585,6 +585,7 @@ def ensure_strategy_frontmatter(
     author: str = "",
     version: str = "",
     tags: list[str] | None = None,
+    extra_frontmatter: dict | None = None,
 ) -> str:
     """Ensure strategy markdown has YAML frontmatter with metadata.
 
@@ -597,24 +598,43 @@ def ensure_strategy_frontmatter(
         author: Attribution string.
         version: Semantic version string.
         tags: List of lowercase kebab-case tags.
+        extra_frontmatter: Additional top-level strategy frontmatter fields.
 
     Returns:
         Strategy markdown with frontmatter.
     """
+    extra_fields = {
+        str(key): value
+        for key, value in (extra_frontmatter or {}).items()
+        if value not in (None, "")
+    }
     if content.strip().startswith("---"):
-        return _inject_metadata_into_existing(
-            content,
-            author=author,
-            version=version,
-            tags=tags,
-        )
+        frontmatter, body = split_frontmatter(content)
+        normalized = dict(frontmatter)
+        if category:
+            normalized.setdefault("category", category)
+        if tags:
+            normalized.setdefault("tags", tags)
+        if author:
+            normalized.setdefault("author", author)
+        if version:
+            normalized.setdefault("version", version)
+        for key, value in extra_fields.items():
+            normalized.setdefault(key, value)
+        return render_frontmatter(normalized) + body
 
-    fm_lines = ["---", f"category: {category}"]
-    fm_lines.extend(_build_metadata_lines(author=author, version=version, tags=tags))
-    fm_lines.append("---")
-    fm_lines.append("")
+    frontmatter: dict[str, object] = {}
+    if category:
+        frontmatter["category"] = category
+    if tags:
+        frontmatter["tags"] = tags
+    if author:
+        frontmatter["author"] = author
+    if version:
+        frontmatter["version"] = version
+    frontmatter.update(extra_fields)
 
-    return "\n".join(fm_lines) + content
+    return render_frontmatter(frontmatter) + content
 
 
 def ensure_lesson_frontmatter(

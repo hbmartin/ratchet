@@ -20,10 +20,12 @@ from ratchet.client.pending import (
 )
 from ratchet.client.skill_utils import (
     DEFAULT_VERSION,
+    RATCHET_AUTHOR_MARKER,
     get_author,
     parse_frontmatter,
     render_frontmatter,
     sanitize_name,
+    skill_frontmatter_value,
     split_frontmatter,
 )
 from ratchet.client.stats import get_project_folder_name
@@ -32,6 +34,7 @@ HOST_SKILL_DIRS = {
     "claude": Path(".claude") / "skills",
     "codex": Path(".agents") / "skills",
 }
+MANAGED_MARKER = ".ratchet-managed.json"
 
 
 @dataclass
@@ -63,6 +66,53 @@ def _approved_skill(skill: PendingSkillInfo) -> bool:
     return skill.safety_gate_status == "approved"
 
 
+def _approved_strategy(strategy: PendingStrategyInfo) -> bool:
+    return strategy.safety_gate_status == "approved"
+
+
+def _is_ratchet_managed_destination(destination: Path) -> bool:
+    marker = destination / MANAGED_MARKER
+    if marker.is_file():
+        return True
+
+    skill_md = destination / "SKILL.md"
+    if not skill_md.is_file():
+        return False
+
+    try:
+        frontmatter = parse_frontmatter(skill_md.read_text(encoding="utf-8"))
+    except OSError:
+        return False
+    metadata = frontmatter.get("metadata")
+    if isinstance(metadata, dict) and metadata.get("ratchet_managed") is True:
+        return True
+    author = str(skill_frontmatter_value(frontmatter, "author", frontmatter.get("author", "")))
+    return RATCHET_AUTHOR_MARKER in author
+
+
+def _prepare_destination(destination: Path) -> None:
+    if not destination.exists():
+        return
+    if not _is_ratchet_managed_destination(destination):
+        raise FileExistsError(f"Refusing to overwrite non-Ratchet skill directory: {destination}")
+    shutil.rmtree(destination)
+
+
+def _write_managed_marker(destination: Path, *, kind: str, source_name: str) -> None:
+    (destination / MANAGED_MARKER).write_text(
+        json.dumps(
+            {
+                "managed_by": "ratchet",
+                "kind": kind,
+                "source_name": source_name,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def _ensure_top_level_skill_fields(content: str, *, name: str, description: str) -> str:
     frontmatter, body = split_frontmatter(content)
     frontmatter = dict(frontmatter)
@@ -79,8 +129,7 @@ def _install_skill_tree(skill: PendingSkillInfo, target_root: Path) -> None:
 
     name = sanitize_name(skill.name)
     destination = target_root / name
-    if destination.exists():
-        shutil.rmtree(destination)
+    _prepare_destination(destination)
     shutil.copytree(source, destination)
 
     skill_md = destination / "SKILL.md"
@@ -90,6 +139,7 @@ def _install_skill_tree(skill: PendingSkillInfo, target_root: Path) -> None:
         _ensure_top_level_skill_fields(content, name=name, description=description),
         encoding="utf-8",
     )
+    _write_managed_marker(destination, kind="skill", source_name=skill.name)
 
 
 def _strategy_skill_content(strategy: PendingStrategyInfo) -> tuple[str, str]:
@@ -119,10 +169,10 @@ def _strategy_skill_content(strategy: PendingStrategyInfo) -> tuple[str, str]:
 def _install_strategy_skill(strategy: PendingStrategyInfo, target_root: Path) -> str:
     name, content = _strategy_skill_content(strategy)
     destination = target_root / name
-    if destination.exists():
-        shutil.rmtree(destination)
+    _prepare_destination(destination)
     destination.mkdir(parents=True, exist_ok=True)
     (destination / "SKILL.md").write_text(content, encoding="utf-8")
+    _write_managed_marker(destination, kind="strategy", source_name=strategy.name)
     return name
 
 
@@ -143,12 +193,16 @@ def auto_install_approved_pending(project_dir: Path, current_host: str) -> AutoI
     skills = get_pending_skills()
     strategies = get_pending_strategies()
     approved_skills = [skill for skill in skills if _approved_skill(skill)]
+    approved_strategies = [strategy for strategy in strategies if _approved_strategy(strategy)]
     review_required_skills = [skill for skill in skills if skill not in approved_skills]
-    result.review_required = [skill.name for skill in review_required_skills]
+    review_required_strategies = [strategy for strategy in strategies if strategy not in approved_strategies]
+    result.review_required = [
+        *[skill.name for skill in review_required_skills],
+        *[strategy.name for strategy in review_required_strategies],
+    ]
 
     installed_skill_infos: list[PendingSkillInfo] = []
     installed_strategy_infos: list[PendingStrategyInfo] = []
-    installed_strategy_names: set[str] = set()
 
     for skill in approved_skills:
         try:
@@ -159,15 +213,13 @@ def auto_install_approved_pending(project_dir: Path, current_host: str) -> AutoI
         except Exception as exc:
             result.errors.append(f"{skill.name}: {exc}")
 
-    for strategy in strategies:
+    for strategy in approved_strategies:
         try:
             installed_name = ""
             for target in targets.values():
                 installed_name = _install_strategy_skill(strategy, target)
             result.installed_strategies.append(installed_name or strategy.name)
             installed_strategy_infos.append(strategy)
-            if installed_name:
-                installed_strategy_names.add(installed_name)
         except Exception as exc:
             result.errors.append(f"{strategy.name}: {exc}")
 

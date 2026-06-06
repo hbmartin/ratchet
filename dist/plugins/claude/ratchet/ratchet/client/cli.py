@@ -229,7 +229,9 @@ def _print_debug_snapshot(snapshot: dict) -> None:
     print(f"Trace ID:   {status.get('trace_id') or 'unknown'}")
     print(f"Started:    {status.get('started_at') or 'unknown'}")
     print(f"Completed:  {status.get('completed_at') or 'not completed'}")
-    print(f"Heartbeat:  {_format_age(status.get('last_heartbeat_at'))} ago ({status.get('heartbeat_count', 0)} beats)")
+    print(
+        f"Heartbeat:  {_format_age(status.get('last_heartbeat_at'))} ago ({status.get('heartbeat_count', 0)} beats)"
+    )
     if status.get("progress"):
         print(f"Progress:   {_progress_summary(status['progress'])}")
     if status.get("error"):
@@ -487,16 +489,21 @@ def cmd_configure(args: argparse.Namespace) -> int:
         if value:
             ignored.append(attr.replace("_", "-"))
 
-    _CONFIG_FIELDS = [
-        ("llm_mode", "RATCHET_LLM_MODE"),
-        ("host_agent", "RATCHET_HOST_AGENT"),
-    ]
+    resolved_llm_mode = args.llm_mode or env_vars.get("RATCHET_LLM_MODE")
+    if args.host_agent and resolved_llm_mode != "host-cli":
+        print("Configuration error: --host-agent requires --llm-mode host-cli", file=sys.stderr)
+        return 2
 
-    for attr, env_key in _CONFIG_FIELDS:
-        value = getattr(args, attr, None)
-        if value:
-            env_vars[env_key] = value
-            updated.append(f"{env_key}={value}")
+    if args.llm_mode:
+        env_vars["RATCHET_LLM_MODE"] = args.llm_mode
+        updated.append(f"RATCHET_LLM_MODE={args.llm_mode}")
+        if args.llm_mode != "host-cli" and "RATCHET_HOST_AGENT" in env_vars:
+            env_vars.pop("RATCHET_HOST_AGENT", None)
+            removed.append("RATCHET_HOST_AGENT")
+
+    if args.host_agent:
+        env_vars["RATCHET_HOST_AGENT"] = args.host_agent
+        updated.append(f"RATCHET_HOST_AGENT={args.host_agent}")
 
     if not updated and not ignored and not removed:
         print("\nCurrent configuration:")
@@ -679,24 +686,24 @@ def cmd_pipeline_logs(args: argparse.Namespace) -> int:
         print(f"Log file does not exist: {log_path}", file=sys.stderr)
         return 1
 
-    def print_tail() -> int:
-        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        selected = lines[-args.tail :] if args.tail > 0 else lines
-        for line in selected:
-            print(line)
-        return len(lines)
-
-    seen = print_tail()
-    if not args.follow:
-        return 0
-
     try:
-        while True:
-            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-            for line in lines[seen:]:
-                print(line)
-            seen = len(lines)
-            time.sleep(1.0)
+        with open(log_path, encoding="utf-8", errors="replace") as log_file:
+            if args.tail > 0:
+                lines = log_file.readlines()
+                for line in lines[-args.tail :]:
+                    print(line, end="" if line.endswith("\n") else "\n")
+            else:
+                print(log_file.read(), end="")
+
+            if not args.follow:
+                return 0
+
+            while True:
+                line = log_file.readline()
+                if not line:
+                    time.sleep(1.0)
+                    continue
+                print(line, end="" if line.endswith("\n") else "\n", flush=True)
     except KeyboardInterrupt:
         return 0
 
@@ -707,13 +714,19 @@ def _select_debug_run(store, run_id: str, recent: int):
 
     runs = store.list_pipeline_runs(include_terminal=True, limit=recent)
     if not runs:
-        raise LookupError("No pipeline runs found. Run `/ratchet:wisdom-gen` first, then retry debug.")
+        raise LookupError(
+            "No pipeline runs found. Run `/ratchet:wisdom-gen` first, then retry debug."
+        )
 
     for run in runs:
         heartbeat_age = _age_seconds(run.last_heartbeat_at)
         if run.status == "failed":
             return run
-        if run.status in {"queued", "running"} and heartbeat_age is not None and heartbeat_age > 120:
+        if (
+            run.status in {"queued", "running"}
+            and heartbeat_age is not None
+            and heartbeat_age > 120
+        ):
             return run
     return runs[0]
 
@@ -952,7 +965,9 @@ def main():
     # Pipeline status command
     pstatus_parser = subparsers.add_parser("pipeline-status", help="Show pipeline runs")
     pstatus_parser.add_argument("--all", action="store_true", help="Show recent terminal runs too")
-    pstatus_parser.add_argument("--recent", type=int, default=20, help="Max runs to show (default: 20)")
+    pstatus_parser.add_argument(
+        "--recent", type=int, default=20, help="Max runs to show (default: 20)"
+    )
     pstatus_parser.add_argument("--json", action="store_true", help="Emit JSON")
 
     # Pipeline stop command
@@ -965,16 +980,22 @@ def main():
 
     plogs_parser = subparsers.add_parser("pipeline-logs", help="Show or follow a worker log")
     plogs_parser.add_argument("--run-id", required=True, help="Run ID to inspect")
-    plogs_parser.add_argument("--tail", type=int, default=80, help="Lines to print first (default: 80)")
+    plogs_parser.add_argument(
+        "--tail", type=int, default=80, help="Lines to print first (default: 80)"
+    )
     plogs_parser.add_argument("--follow", action="store_true", help="Follow the log")
 
     debug_parser = subparsers.add_parser("debug", help="Collect local pipeline debug evidence")
     debug_parser.add_argument("--run-id", default="", help="Run ID to debug")
-    debug_parser.add_argument("--recent", type=int, default=10, help="Recent runs to consider (default: 10)")
+    debug_parser.add_argument(
+        "--recent", type=int, default=10, help="Recent runs to consider (default: 10)"
+    )
     debug_parser.add_argument("--output", default="", help="Output bundle directory")
     debug_parser.add_argument("--json", action="store_true", help="Emit JSON")
 
-    bundle_parser = subparsers.add_parser("debug-bundle", help="Create a raw pipeline debug bundle directory")
+    bundle_parser = subparsers.add_parser(
+        "debug-bundle", help="Create a raw pipeline debug bundle directory"
+    )
     bundle_parser.add_argument("--run-id", required=True, help="Run ID to bundle")
     bundle_parser.add_argument("--output", default="", help="Output bundle directory")
     bundle_parser.add_argument("--json", action="store_true", help="Emit JSON")

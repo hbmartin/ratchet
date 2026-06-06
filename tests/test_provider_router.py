@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+
+import pytest
 
 from ratchet.pipeline import llm as llm_module
 from ratchet.pipeline.llm import (
     BaseLocalLLM,
+    CommandAdapterLLM,
     DeterministicLocalLLM,
     LocalLLMError,
     RouterLLM,
@@ -40,14 +44,16 @@ def test_host_cli_mode_prefers_current_agent(tmp_path, monkeypatch):
     monkeypatch.setenv("RATCHET_LLM_MODE", "host-cli")
     monkeypatch.setenv("CODEX_THREAD_ID", "thread-1")
     monkeypatch.delenv("RATCHET_TEST_FAKE_LLM", raising=False)
-    monkeypatch.setattr(llm_module.shutil, "which", lambda name: f"/bin/{name}" if name == "codex" else None)
+    monkeypatch.setattr(
+        llm_module.shutil, "which", lambda name: f"/bin/{name}" if name == "codex" else None
+    )
 
     client = create_llm_client()
 
     assert isinstance(client, RouterLLM)
     first = client.generation_providers[0]
     assert first.provider == "agent-cli"
-    assert getattr(first, "agent") == "codex"
+    assert first.agent == "codex"
     assert client.generation_providers[-1].provider == "deterministic"
     assert client.embedding_providers[0].provider == "deterministic"
 
@@ -92,8 +98,12 @@ def test_api_provider_names_in_config_are_ignored(tmp_path, monkeypatch):
     client = create_llm_client()
 
     assert isinstance(client, RouterLLM)
-    assert all(isinstance(provider, DeterministicLocalLLM) for provider in client.generation_providers)
-    assert all(isinstance(provider, DeterministicLocalLLM) for provider in client.embedding_providers)
+    assert all(
+        isinstance(provider, DeterministicLocalLLM) for provider in client.generation_providers
+    )
+    assert all(
+        isinstance(provider, DeterministicLocalLLM) for provider in client.embedding_providers
+    )
 
 
 class _NoEmbeddingLLM(BaseLocalLLM):
@@ -112,3 +122,46 @@ def test_agent_rerank_fallback_when_no_embedder():
     ranked = router.rerank_documents("auth refresh", ["a", "b", "c"], top_k=2)
 
     assert [item.index for item in ranked] == [2, 0]
+
+
+class _WrongDimensionLLM(BaseLocalLLM):
+    provider = "wrong-dimension"
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [[1.0, 0.0] for _ in texts]
+
+    def generate_text(self, prompt: str, *, model: str | None = None) -> str:
+        return "{}"
+
+
+def test_rerank_rejects_wrong_embedding_dimension():
+    provider = _WrongDimensionLLM()
+
+    with pytest.raises(LocalLLMError, match="expected 128"):
+        provider.rerank_documents("auth refresh", ["a"])
+
+
+def test_command_embedder_rejects_wrong_embedding_dimension():
+    command = f"{json.dumps(sys.executable)} -c 'import json; print(json.dumps([[1.0, 0.0]]))'"
+    provider = CommandAdapterLLM(embedding_command=command)
+
+    with pytest.raises(LocalLLMError, match="expected 128"):
+        provider.embed_documents(["auth refresh"])
+
+
+class _ListRerankLLM(BaseLocalLLM):
+    provider = "list-rerank"
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        raise LocalLLMError("no embeddings")
+
+    def generate_text(self, prompt: str, *, model: str | None = None) -> str:
+        return "[1, 0]"
+
+
+def test_agent_rerank_accepts_raw_json_list():
+    router = RouterLLM(generation_providers=[_ListRerankLLM()], embedding_providers=[])
+
+    ranked = router.rerank_documents("auth refresh", ["first", "second"], top_k=2)
+
+    assert [item.index for item in ranked] == [1, 0]

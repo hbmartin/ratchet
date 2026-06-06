@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-
 SCAN_ROOTS = ("ratchet", "scripts", "skills", "hooks", "dist/plugins")
 SCAN_SUFFIXES = {".py", ".sh", ".js", ".ts", ".tsx", ".jsx"}
 ALLOWLIST_EXACT = {
@@ -29,7 +28,7 @@ DISALLOWED_PATTERNS = [
     re.compile(r"\bimport\s+urllib\b"),
     re.compile(r"\bfrom\s+urllib\b"),
     re.compile(r"\bcurl\s+(?![^\n]*(?:http://localhost|http://127\.0\.0\.1))"),
-    re.compile(r"https?://(?!localhost\b|127\.0\.0\.1\b|\[::1\])"),
+    re.compile(r"https?://(?!(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:[/?#]|$))"),
 ]
 
 
@@ -60,3 +59,14 @@ def test_no_remote_network_calls_in_runtime_files(repo_root: Path):
                     break
 
     assert not findings, "Remote network call patterns found:\n" + "\n".join(findings)
+
+
+def test_remote_url_guard_rejects_localhost_prefix_domains():
+    url_pattern = DISALLOWED_PATTERNS[-1]
+
+    assert url_pattern.search("https://localhost.evil.com/path")
+    assert url_pattern.search("http://127.0.0.1.evil.com")
+    assert not url_pattern.search("http://localhost")
+    assert not url_pattern.search("http://localhost:3000/path")
+    assert not url_pattern.search("http://127.0.0.1:8000/status")
+    assert not url_pattern.search("http://[::1]:9000/status")

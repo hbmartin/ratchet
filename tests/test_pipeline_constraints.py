@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import os
 from types import SimpleNamespace
 
@@ -13,6 +14,7 @@ from ratchet.client.api.protocol import (
     PipelineStatusResult,
     TriggerPipelineResult,
 )
+from ratchet.client.api.remote import RatchetRemote
 from ratchet.pipeline.local_client import RatchetLocal
 
 
@@ -68,11 +70,17 @@ class TestLocalPipelineConflicts:
     @pytest.mark.asyncio
     async def test_force_stops_existing_run_and_queues_new_one(self, client, monkeypatch):
         _seed_active_run(client, project_id="test-project", run_id="run-old")
+
+        async def no_wait(run_id: str, pid: int | None) -> None:
+            assert run_id == "run-old"
+            assert pid == os.getpid()
+
         monkeypatch.setattr(
             "ratchet.pipeline.local_client.subprocess.Popen",
             lambda *args, **kwargs: SimpleNamespace(pid=os.getpid()),
         )
         monkeypatch.setattr(client.store, "signal_pid", lambda pid: None)
+        monkeypatch.setattr(client, "_wait_for_run_exit", no_wait)
 
         result = await client.trigger_pipeline_run(project_id="test-project", force=True)
 
@@ -80,6 +88,27 @@ class TestLocalPipelineConflicts:
         assert old_status.status == "stopped"
         assert result.status == "queued"
         assert client.store.find_active_run_for_project("test-project") == result.run_id
+
+    @pytest.mark.asyncio
+    async def test_force_waits_for_existing_worker_before_spawning(self, client, monkeypatch):
+        _seed_active_run(client, project_id="test-project", run_id="run-old")
+        calls: list[tuple[str, str, int | None]] = []
+
+        async def record_wait(run_id: str, pid: int | None) -> None:
+            calls.append(("wait", run_id, pid))
+
+        def record_popen(*args, **kwargs):
+            calls.append(("spawn", "run-new", None))
+            return SimpleNamespace(pid=os.getpid())
+
+        monkeypatch.setattr("ratchet.pipeline.local_client.subprocess.Popen", record_popen)
+        monkeypatch.setattr(client.store, "signal_pid", lambda pid: None)
+        monkeypatch.setattr(client, "_wait_for_run_exit", record_wait)
+
+        await client.trigger_pipeline_run(project_id="test-project", force=True)
+
+        assert calls[0] == ("wait", "run-old", os.getpid())
+        assert calls[1] == ("spawn", "run-new", None)
 
     @pytest.mark.asyncio
     async def test_trigger_preserves_local_run_options(self, client, monkeypatch):
@@ -101,7 +130,7 @@ class TestLocalPipelineConflicts:
 
         row = client.store.get_pipeline_run_row(result.run_id)
         assert row["project_id"] == "my-proj"
-        assert row["steps_json"] == '["step0", "step1"]'
+        assert json.loads(row["steps_json"]) == ["step0", "step1"]
         assert row["limit_value"] == 5
         assert row["concurrency"] == 8
         assert row["model"] == "deterministic-local"
@@ -130,3 +159,7 @@ class TestPipelineConstraintsCompatibility:
         sig = inspect.signature(RatchetLocal.trigger_pipeline_run)
         assert "force" in sig.parameters
         assert sig.parameters["force"].default is False
+
+    def test_remote_shim_rejects_unexpected_kwargs(self, tmp_path):
+        with pytest.raises(TypeError, match="unexpected_option"):
+            RatchetRemote(db_path=tmp_path / "runtime.sqlite3", unexpected_option=True)

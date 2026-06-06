@@ -72,6 +72,7 @@ By default, the local runtime uses deterministic local embeddings and structured
 heuristics. To delegate generation to the current host agent CLI, configure:
 
 ```bash
+set -a && . "$RATCHET_DIR/.env" 2>/dev/null && set +a
 uv run --directory "$RATCHET_DIR" ratchet configure --llm-mode host-cli --host-agent codex
 ```
 

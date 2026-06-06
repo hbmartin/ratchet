@@ -253,7 +253,7 @@ with the enhanced version (semantic version bumped, `generated_at` refreshed, RO
 **Store locally** (records the canonical enhanced skill name with the bumped semantic version and lineage metadata, while preserving the original pending-skill folder name as the lineage parent):
 
 ```bash
-set -a && . ~/.local/ratchet/.env 2>/dev/null && set +a
+set -a && . "$RATCHET_DIR/.env" 2>/dev/null && set +a
 uv run --directory "$RATCHET_DIR" python -m ratchet.client.skill_enhance_helper \
     store-skill \
     --skill-name "$SKILL_NAME" \

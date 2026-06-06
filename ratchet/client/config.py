@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,8 @@ from typing import Any
 import yaml
 
 from ratchet.client.dirs import data_dir
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "sources": {
@@ -54,9 +57,14 @@ def load_config() -> dict[str, Any]:
         return deepcopy(DEFAULT_CONFIG)
     try:
         loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError):
+    except OSError as exc:
+        logger.warning("Unable to read Ratchet config %s; using defaults: %s", path, exc)
+        return deepcopy(DEFAULT_CONFIG)
+    except yaml.YAMLError as exc:
+        logger.warning("Unable to parse Ratchet config %s; using defaults: %s", path, exc)
         return deepcopy(DEFAULT_CONFIG)
     if not isinstance(loaded, dict):
+        logger.warning("Ratchet config %s is not a mapping; using defaults.", path)
         return deepcopy(DEFAULT_CONFIG)
     return _deep_merge(DEFAULT_CONFIG, loaded)
 
@@ -72,7 +80,7 @@ def write_default_config_if_missing() -> Path:
 
 def source_enabled(name: str, config: dict[str, Any] | None = None) -> bool:
     """Return whether a configured source is enabled."""
-    cfg = config or load_config()
+    cfg = load_config() if config is None else config
     sources = cfg.get("sources", {})
     if not isinstance(sources, dict):
         return bool(DEFAULT_CONFIG["sources"].get(name, {}).get("enabled", False))

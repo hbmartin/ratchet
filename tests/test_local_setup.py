@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from ratchet.client.check_auth import check_auth
 from ratchet.client.cli import get_env_path, load_env_file
 from ratchet.client.login import run_login
 
 
 def test_check_auth_requires_no_remote_or_provider_keys(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.delenv("RATCHET_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -19,6 +24,7 @@ def test_check_auth_requires_no_remote_or_provider_keys(tmp_path, monkeypatch):
 
 
 def test_login_shim_writes_no_remote_mode_or_keys(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
 
     assert run_login() == 0
@@ -32,6 +38,7 @@ def test_login_shim_writes_no_remote_mode_or_keys(tmp_path, monkeypatch, capsys)
 
 
 def test_login_shim_removes_stale_remote_and_provider_settings(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
     env_path = get_env_path()
     env_path.parent.mkdir(parents=True, exist_ok=True)
@@ -42,6 +49,7 @@ def test_login_shim_removes_stale_remote_and_provider_settings(tmp_path, monkeyp
                 "RATCHET_CLIENT_MODE=remote",
                 "RATCHET_SERVER_URL=old",
                 "OPENAI_API_KEY=sk-old",
+                "UNRELATED_API_KEY=keep-me",
                 "RATCHET_LLM_MODE=host-cli",
             ]
         )
@@ -57,3 +65,28 @@ def test_login_shim_removes_stale_remote_and_provider_settings(tmp_path, monkeyp
     assert "RATCHET_SERVER_URL" not in loaded
     assert "OPENAI_API_KEY" not in loaded
     assert loaded["RATCHET_LLM_MODE"] == "host-cli"
+    assert loaded["UNRELATED_API_KEY"] == "keep-me"
+
+
+def test_login_setup_rejects_host_agent_without_host_cli(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    from ratchet.client.login import _save_local_setup
+
+    with pytest.raises(ValueError, match="--host-agent requires --llm-mode host-cli"):
+        _save_local_setup(llm_mode="deterministic", host_agent="codex")
+
+
+def test_load_profile_recovers_from_invalid_json(tmp_path, monkeypatch):
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    from ratchet.client.profile import get_profile_path, load_profile
+
+    path = get_profile_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not-json", encoding="utf-8")
+
+    profile = load_profile()
+
+    assert profile.language is None
+    assert profile.level is None
+    assert profile.style is None
