@@ -1,0 +1,6 @@
+interface:
+  display_name: "Ratchet Setup"
+  short_description: "Configure local providers"
+  icon_small: "../../../assets/logo_ratchet.png"
+  icon_large: "../../../assets/logo_ratchet.png"
+  default_prompt: "Use $ratchet-login to show the local Ratchet provider setup steps."

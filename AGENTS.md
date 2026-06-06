@@ -1,44 +1,47 @@
-# mega-code plugin agent guide
+# ratchet plugin agent guide
 
-This repo contains the MEGA-Code plugin surfaces:
+This repo contains the Ratchet plugin surfaces:
 
-- Claude Code skills in `skills/`
-- lifecycle hooks in `hooks/`
+- shared Claude/Codex skills in `skills/`
+- host hook sources in `hooks/claude/` and `hooks/codex/`
+- generated host packages in `dist/plugins/claude/ratchet` and `dist/plugins/codex/ratchet`
 - helper scripts in `scripts/`
-- client/runtime code in `mega_code/`
+- client/runtime code in `ratchet/`
 
 Keep changes scoped to those areas. If a task requires core extraction logic,
-prefer editing `mega_code/` rather than duplicating logic in skill docs or shell
+prefer editing `ratchet/` rather than duplicating logic in skill docs or shell
 scripts.
 
 ## Repo map
 
 ```text
-skills/wisdom-gen/ -> /mega-code:wisdom-gen
-skills/status/     -> /mega-code:status
-skills/profile/    -> /mega-code:profile
-skills/login/      -> /mega-code:login
-skills/help/       -> /mega-code:help
+skills/wisdom-gen/ -> /ratchet:wisdom-gen
+skills/status/     -> /ratchet:status
+skills/debug/      -> /ratchet:debug
+skills/profile/    -> /ratchet:profile
+skills/login/      -> /ratchet:login
+skills/help/       -> /ratchet:help
 
-hooks/hooks.json   -> SessionStart / SessionEnd / UserPromptSubmit / Stop
+hooks/claude/hooks.json -> SessionStart / SessionEnd / UserPromptSubmit / Stop
+hooks/codex/hooks.json  -> SessionStart / UserPromptSubmit / Stop
 scripts/           -> session-start.sh, check_pending_skills.py,
-                      run_pipeline_async.py
+                      codex-bootstrap.sh, generate_plugin_packages.py
 ```
 
 ## Non-negotiable runtime rules
 
-### Resolve `MEGA_DIR` in Claude-facing skills
+### Resolve `RATCHET_DIR` in host-facing skills
 
-Every Claude skill that runs `uv` must set:
+Every shared skill that runs `uv` must set:
 
 ```bash
-MEGA_DIR="${CLAUDE_PLUGIN_ROOT:-$(cat ~/.local/share/mega-code/plugin-root 2>/dev/null)}"
+RATCHET_DIR="${RATCHET_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$(cat ~/.local/ratchet/plugin-root 2>/dev/null)}}}"
 ```
 
 Every `uv run` command must include:
 
 ```bash
---directory "$MEGA_DIR"
+--directory "$RATCHET_DIR"
 ```
 
 ### Load environment before Python commands in skills/scripts
@@ -46,23 +49,24 @@ Every `uv run` command must include:
 Before Python commands that depend on credentials or server config, load `.env`:
 
 ```bash
-set -a && . "$MEGA_DIR/.env" 2>/dev/null && set +a
+set -a && . "$RATCHET_DIR/.env" 2>/dev/null && set +a
 ```
 
-If a command talks to the MEGA-Code server, check `MEGA_CODE_API_KEY` first and
+If a command talks to the Ratchet server, check `RATCHET_API_KEY` first and
 fail with a clear message when it is missing.
 
 ### Keep related shell steps in one Bash block
 
-If a skill depends on variables such as `MEGA_DIR`, `LOG`, or exported project
+If a skill depends on variables such as `RATCHET_DIR`, `LOG`, or exported project
 context, keep the commands in one Bash block so state is preserved.
 
-## Claude Code skill conventions
+## Shared skill conventions
 
-Claude skills live in `skills/*/SKILL.md`.
+Shared host skills live in `skills/*/SKILL.md`.
 
 Required frontmatter:
 
+- `name:` with a `ratchet-*` value
 - `description:`
 - `allowed-tools:`
 
@@ -76,19 +80,23 @@ Authoring rules:
 - Prefer the smallest `allowed-tools:` set that still works.
 - Use `Bash, Read` by default; add `Write`, `Edit`, or `AskUserQuestion` only when needed.
 - Keep command examples copy-pastable.
-- Do not hardcode plugin install paths; use `${CLAUDE_PLUGIN_ROOT}` in hooks and `MEGA_DIR` in skills.
-- If a skill invokes Python entry points, prefer existing modules in `mega_code.client` or scripts in `scripts/`.
+- Do not hardcode plugin install paths; use host hook roots and `RATCHET_DIR` in skills.
+- If a skill invokes Python entry points, prefer existing modules in `ratchet.client` or scripts in `scripts/`.
+- Keep `agents/openai.yaml` present for every shared skill so Codex can display it.
 
 ## Hook conventions
 
-Hook config lives in `hooks/hooks.json`.
+Hook source config lives in `hooks/claude/hooks.json` and `hooks/codex/hooks.json`.
+Generated packages expose the selected host config as `hooks/hooks.json`.
 
 Required rules:
 
-- Reference `${CLAUDE_PLUGIN_ROOT}` in every hook command.
+- Claude hook commands reference `${CLAUDE_PLUGIN_ROOT}`.
+- Codex hook commands resolve `${RATCHET_PLUGIN_ROOT}` or `${CODEX_PLUGIN_ROOT}`.
 - Every hook entry must include a `timeout`.
 - Use at most `30` seconds for collection/data hooks and at most `5` seconds for quick checks.
-- Supported events in this repo are `SessionStart`, `SessionEnd`, `UserPromptSubmit`, and `Stop`.
+- Claude supports `SessionStart`, `SessionEnd`, `UserPromptSubmit`, and `Stop`.
+- Codex supports `SessionStart`, `UserPromptSubmit`, and `Stop`; there is no Codex `SessionEnd` dependency.
 
 When editing hooks:
 
@@ -100,17 +108,19 @@ When editing hooks:
 
 When adding or updating behavior:
 
-1. Put reusable logic in `mega_code/` or `scripts/`.
+1. Put reusable logic in `ratchet/` or `scripts/`.
 2. Keep `SKILL.md` files focused on invocation workflow and operator guidance.
 3. Reuse existing commands and paths where possible.
+4. Run `uv run python scripts/generate_plugin_packages.py` after changing shared package inputs.
 
 ## Consistency checks
 
 Before finishing a change, verify:
 
 - referenced files and commands actually exist in this repo
-- Claude skills use the `MEGA_DIR` pattern when calling `uv`
-- hook commands use `${CLAUDE_PLUGIN_ROOT}`
+- skills use the `RATCHET_DIR` pattern when calling `uv`
+- generated Claude and Codex packages are current
+- hook commands use the correct host root
 - new server-facing commands document the required auth/env assumptions
 - instructions do not mention commands or skills that are absent from this repo
 

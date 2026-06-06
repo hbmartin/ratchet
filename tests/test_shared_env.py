@@ -1,4 +1,4 @@
-"""Tests for shared local environment (~/.local/ratchetai).
+"""Tests for shared local environment (~/.local/ratchet).
 
 Covers:
 1. Shared .env credential store (get_env_path, save_env_file, load_env_file)
@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from mega_code.client.cli import get_env_path, load_env_file, save_env_file
-from mega_code.client.dirs import data_dir
+from ratchet.client.cli import get_env_path, load_env_file, save_env_file
+from ratchet.client.dirs import data_dir
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Unit tests: shared .env path and file operations
@@ -22,12 +22,12 @@ from mega_code.client.dirs import data_dir
 
 
 class TestGetEnvPath:
-    """get_env_path() always returns ~/.local/ratchetai/.env."""
+    """get_env_path() always returns ~/.local/ratchet/.env."""
 
     def test_returns_stable_path(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         result = get_env_path()
-        assert result == tmp_path / ".local" / "ratchetai" / ".env"
+        assert result == tmp_path / ".local" / "ratchet" / ".env"
 
     def test_creates_parent_directory(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -77,38 +77,38 @@ class TestSaveAndLoadEnvFile:
 
 
 class TestLoginSavesToSharedEnv:
-    """_save_api_key writes credentials to ~/.local/ratchetai/.env."""
+    """_save_api_key writes credentials to ~/.local/ratchet/.env."""
 
     def test_save_api_key_writes_to_stable_path(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        from mega_code.client.login import _save_api_key
+        from ratchet.client.login import _save_api_key
 
         env_path, env_vars = _save_api_key(
             "mg_test_api_key",
-            "https://console.megacode.ai/api/mega-service/v1",
+            "https://console.ratchetai.ai/api/ratchetai-service/v1",
         )
-        assert env_path == tmp_path / ".local" / "ratchetai" / ".env"
+        assert env_path == tmp_path / ".local" / "ratchet" / ".env"
 
     def test_save_api_key_file_permissions(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        from mega_code.client.login import _save_api_key
+        from ratchet.client.login import _save_api_key
 
-        env_path, _ = _save_api_key("mg_key", "https://x.com/api/mega-service/v1")
+        env_path, _ = _save_api_key("mg_key", "https://x.com/api/ratchetai-service/v1")
         mode = stat.S_IMODE(env_path.stat().st_mode)
         assert mode == 0o600
 
     def test_save_api_key_preserves_existing_vars(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        from mega_code.client.login import _save_api_key
+        from ratchet.client.login import _save_api_key
 
         # Pre-populate with an extra key
         env_path = get_env_path()
         save_env_file(env_path, {"OPENAI_API_KEY": "sk-existing"})
 
-        _save_api_key("mg_new_key", "https://x.com/api/mega-service/v1")
+        _save_api_key("mg_new_key", "https://x.com/api/ratchetai-service/v1")
         loaded = load_env_file(env_path)
         assert loaded["OPENAI_API_KEY"] == "sk-existing"
-        assert loaded["MEGA_CODE_API_KEY"] == "mg_new_key"
+        assert loaded["RATCHET_API_KEY"] == "mg_new_key"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -122,88 +122,74 @@ class TestCrossToolCredentialSharing:
     def test_login_via_claude_code_visible_to_codex(self, tmp_path, monkeypatch):
         """Credentials saved by Claude Code login are readable by Codex CLI."""
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        from mega_code.client.login import _save_api_key
+        from ratchet.client.login import _save_api_key
 
         # Simulate Claude Code login
-        _save_api_key("mg_claude_key", "https://console.megacode.ai/api/mega-service/v1")
+        _save_api_key("mg_claude_key", "https://console.ratchetai.ai/api/ratchetai-service/v1")
 
         # Simulate Codex reading the same .env (via the same get_env_path)
         env_path = get_env_path()
         loaded = load_env_file(env_path)
-        assert loaded["MEGA_CODE_API_KEY"] == "mg_claude_key"
-        assert loaded["MEGA_CODE_CLIENT_MODE"] == "remote"
+        assert loaded["RATCHET_API_KEY"] == "mg_claude_key"
+        assert loaded["RATCHET_CLIENT_MODE"] == "remote"
 
     def test_login_via_codex_visible_to_claude_code(self, tmp_path, monkeypatch):
         """Credentials saved via Codex are readable by Claude Code."""
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         # Simulate Codex login (same _save_api_key, same path)
-        from mega_code.client.login import _save_api_key
+        from ratchet.client.login import _save_api_key
 
-        _save_api_key("mg_codex_key", "https://console.megacode.ai/api/mega-service/v1")
+        _save_api_key("mg_codex_key", "https://console.ratchetai.ai/api/ratchetai-service/v1")
 
         # Claude Code reads the same file
         env_path = get_env_path()
         loaded = load_env_file(env_path)
-        assert loaded["MEGA_CODE_API_KEY"] == "mg_codex_key"
+        assert loaded["RATCHET_API_KEY"] == "mg_codex_key"
 
     def test_second_login_overwrites_api_key(self, tmp_path, monkeypatch):
         """Re-login from another tool overwrites the API key."""
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        from mega_code.client.login import _save_api_key
+        from ratchet.client.login import _save_api_key
 
-        _save_api_key("mg_first_key", "https://console.megacode.ai/api/mega-service/v1")
-        _save_api_key("mg_second_key", "https://console.megacode.ai/api/mega-service/v1")
+        _save_api_key("mg_first_key", "https://console.ratchetai.ai/api/ratchetai-service/v1")
+        _save_api_key("mg_second_key", "https://console.ratchetai.ai/api/ratchetai-service/v1")
 
         loaded = load_env_file(get_env_path())
-        assert loaded["MEGA_CODE_API_KEY"] == "mg_second_key"
+        assert loaded["RATCHET_API_KEY"] == "mg_second_key"
 
     def test_run_pipeline_script_loads_stable_env(self, tmp_path, monkeypatch):
-        """run_pipeline.py loads ~/.local/ratchetai/.env first."""
+        """run_pipeline.py loads ~/.local/ratchet/.env first."""
         # The script at module level does:
-        #   _stable_env = Path.home() / ".local" / "ratchetai" / ".env"
+        #   _stable_env = Path.home() / ".local" / "ratchet" / ".env"
         #   if _stable_env.exists(): dotenv.load_dotenv(_stable_env, override=False)
         # We verify the path construction matches get_env_path()
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        stable_env = Path.home() / ".local" / "ratchetai" / ".env"
+        stable_env = Path.home() / ".local" / "ratchet" / ".env"
         assert stable_env == get_env_path()
 
 
-class TestDataDirMigration:
-    """Default path resolution migrates legacy data into ~/.local/ratchetai."""
+class TestDataDirIdentity:
+    """Default path resolution uses only ~/.local/ratchet."""
 
-    def test_data_dir_defaults_to_ratchetai(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("MEGA_CODE_DATA_DIR", raising=False)
+    def test_data_dir_defaults_to_ratchet(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("RATCHET_DATA_DIR", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        assert data_dir() == tmp_path / ".local" / "ratchetai"
+        assert data_dir() == tmp_path / ".local" / "ratchet"
 
-    def test_data_dir_migrates_xdg_legacy_dir(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("MEGA_CODE_DATA_DIR", raising=False)
+    def test_data_dir_does_not_migrate_other_local_dirs(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("RATCHET_DATA_DIR", raising=False)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        legacy_dir = tmp_path / ".local" / "share" / "mega-code"
-        legacy_dir.mkdir(parents=True)
-        (legacy_dir / "profile.json").write_text("{}", encoding="utf-8")
+        other_dir = tmp_path / ".local" / "other-agent"
+        other_dir.mkdir(parents=True)
+        (other_dir / "profile.json").write_text("{}", encoding="utf-8")
 
         resolved = data_dir()
 
-        assert resolved == tmp_path / ".local" / "ratchetai"
-        assert (resolved / "profile.json").read_text(encoding="utf-8") == "{}"
-        assert legacy_dir.is_symlink()
-        assert legacy_dir.resolve() == resolved
-
-    def test_data_dir_migrates_pre_xdg_legacy_dir(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("MEGA_CODE_DATA_DIR", raising=False)
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        legacy_dir = tmp_path / ".local" / "mega-code"
-        legacy_dir.mkdir(parents=True)
-        (legacy_dir / "profile.json").write_text("{}", encoding="utf-8")
-
-        resolved = data_dir()
-
-        assert resolved == tmp_path / ".local" / "ratchetai"
-        assert (resolved / "profile.json").read_text(encoding="utf-8") == "{}"
-        assert legacy_dir.is_symlink()
-        assert legacy_dir.resolve() == resolved
+        assert resolved == tmp_path / ".local" / "ratchet"
+        assert resolved.is_dir()
+        assert (other_dir / "profile.json").is_file()
+        assert not (resolved / "profile.json").exists()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -216,7 +202,7 @@ class TestBootstrapConsistency:
 
     SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
 
-    def _run_bootstrap(self, script_name, tmp_path, mega_dir, data_dir):
+    def _run_bootstrap(self, script_name, tmp_path, ratchet_dir, data_dir):
         """Run a bootstrap script with controlled env."""
         import subprocess
 
@@ -225,14 +211,14 @@ class TestBootstrapConsistency:
             pytest.skip(f"Script {script_name} not found")
 
         env = os.environ.copy()
-        env["MEGA_CODE_DATA_DIR"] = str(data_dir)
+        env["RATCHET_DATA_DIR"] = str(data_dir)
         env["HOME"] = str(tmp_path / "home")
         (tmp_path / "home").mkdir(exist_ok=True)
 
         if script_name == "session-start.sh":
-            env["CLAUDE_PLUGIN_ROOT"] = str(mega_dir)
+            env["CLAUDE_PLUGIN_ROOT"] = str(ratchet_dir)
         subprocess.run(
-            ["bash", str(script)] + ([str(mega_dir)] if "codex" in script_name else []),
+            ["bash", str(script)] + ([str(ratchet_dir)] if "codex" in script_name else []),
             env=env,
             timeout=60,
             capture_output=True,
@@ -241,60 +227,76 @@ class TestBootstrapConsistency:
 
     def test_both_scripts_create_env_file(self, tmp_path):
         """Both bootstrap scripts create .env in the data directory."""
-        mega_dir = tmp_path / "mega"
-        mega_dir.mkdir()
-        (mega_dir / "pyproject.toml").write_text(
+        ratchet_dir = tmp_path / "ratchet"
+        ratchet_dir.mkdir()
+        (ratchet_dir / "pyproject.toml").write_text(
             '[project]\nname="t"\nversion="0.1"\nrequires-python=">=3.10"\n'
         )
-        (mega_dir / ".env").touch()
+        (ratchet_dir / ".env").touch()
 
         for script_name in ("codex-bootstrap.sh", "session-start.sh"):
             data_dir = tmp_path / f"data-{script_name}"
-            self._run_bootstrap(script_name, tmp_path, mega_dir, data_dir)
+            self._run_bootstrap(script_name, tmp_path, ratchet_dir, data_dir)
             assert (data_dir / ".env").is_file(), f"{script_name} didn't create .env"
             mode = stat.S_IMODE((data_dir / ".env").stat().st_mode)
             assert mode == 0o600, f"{script_name} didn't set .env permissions to 0600"
 
     def test_both_scripts_create_profile_json(self, tmp_path):
         """Both bootstrap scripts create profile.json = {}."""
-        mega_dir = tmp_path / "mega"
-        mega_dir.mkdir()
-        (mega_dir / "pyproject.toml").write_text(
+        ratchet_dir = tmp_path / "ratchet"
+        ratchet_dir.mkdir()
+        (ratchet_dir / "pyproject.toml").write_text(
             '[project]\nname="t"\nversion="0.1"\nrequires-python=">=3.10"\n'
         )
-        (mega_dir / ".env").touch()
+        (ratchet_dir / ".env").touch()
 
         for script_name in ("codex-bootstrap.sh", "session-start.sh"):
             data_dir = tmp_path / f"data-{script_name}"
-            self._run_bootstrap(script_name, tmp_path, mega_dir, data_dir)
+            self._run_bootstrap(script_name, tmp_path, ratchet_dir, data_dir)
             assert (data_dir / "profile.json").read_text() == "{}"
 
     def test_both_scripts_write_plugin_root_breadcrumb(self, tmp_path):
         """Both bootstrap scripts write plugin-root breadcrumb."""
-        mega_dir = tmp_path / "mega"
-        mega_dir.mkdir()
-        (mega_dir / "pyproject.toml").write_text(
+        ratchet_dir = tmp_path / "ratchet"
+        ratchet_dir.mkdir()
+        (ratchet_dir / "pyproject.toml").write_text(
             '[project]\nname="t"\nversion="0.1"\nrequires-python=">=3.10"\n'
         )
-        (mega_dir / ".env").touch()
+        (ratchet_dir / ".env").touch()
 
         for script_name in ("codex-bootstrap.sh", "session-start.sh"):
             data_dir = tmp_path / f"data-{script_name}"
-            self._run_bootstrap(script_name, tmp_path, mega_dir, data_dir)
-            assert (data_dir / "plugin-root").read_text().strip() == str(mega_dir)
+            self._run_bootstrap(script_name, tmp_path, ratchet_dir, data_dir)
+            assert (data_dir / "plugin-root").read_text().strip() == str(ratchet_dir)
 
-    def test_credential_migration_from_plugin_dir(self, tmp_path):
-        """Bootstrap migrates credentials from MEGA_DIR/.env to DATA_DIR/.env."""
-        mega_dir = tmp_path / "mega"
-        mega_dir.mkdir()
-        (mega_dir / "pyproject.toml").write_text(
+    def test_both_scripts_create_config_yaml(self, tmp_path):
+        """Both bootstrap scripts create non-secret config.yaml."""
+        ratchet_dir = tmp_path / "ratchet"
+        ratchet_dir.mkdir()
+        (ratchet_dir / "pyproject.toml").write_text(
             '[project]\nname="t"\nversion="0.1"\nrequires-python=">=3.10"\n'
         )
-        # Write credentials in the old location
-        (mega_dir / ".env").write_text("MEGA_CODE_API_KEY=mg_migrated_key\n")
+        (ratchet_dir / ".env").touch()
 
-        data_dir = tmp_path / "data-migration"
-        self._run_bootstrap("codex-bootstrap.sh", tmp_path, mega_dir, data_dir)
+        for script_name in ("codex-bootstrap.sh", "session-start.sh"):
+            data_dir = tmp_path / f"data-{script_name}"
+            self._run_bootstrap(script_name, tmp_path, ratchet_dir, data_dir)
+            content = (data_dir / "config.yaml").read_text()
+            assert "ratchet:" in content
+            assert "codex:" in content
+            assert "generation_order:" in content
+
+    def test_plugin_dir_credentials_are_not_copied(self, tmp_path):
+        """Bootstrap leaves plugin-root secrets out of DATA_DIR/.env."""
+        ratchet_dir = tmp_path / "ratchet"
+        ratchet_dir.mkdir()
+        (ratchet_dir / "pyproject.toml").write_text(
+            '[project]\nname="t"\nversion="0.1"\nrequires-python=">=3.10"\n'
+        )
+        (ratchet_dir / ".env").write_text("RATCHET_API_KEY=mg_migrated_key\n")
+
+        data_dir = tmp_path / "data-no-migration"
+        self._run_bootstrap("codex-bootstrap.sh", tmp_path, ratchet_dir, data_dir)
 
         content = (data_dir / ".env").read_text()
-        assert "mg_migrated_key" in content
+        assert "mg_migrated_key" not in content

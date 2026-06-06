@@ -1,22 +1,22 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "mind-ai-mega-code",
+  "name": "mind-ai-ratchet",
   "owner": {
     "name": "Mind AI",
-    "email": "support@megacode.ai"
+    "email": "support@ratchetai.ai"
   },
   "metadata": {
     "description": "Self-Evolving AI Coding Infrastructure — Generate, Curate, and Enhance Reusable Wisdom"
   },
   "plugins": [
     {
-      "name": "mega-code",
+      "name": "ratchet",
       "source": "./",
-      "description": "MEGA Code turns coding sessions into self-evolving wisdom for agents and developers. It automatically generates Skills and Strategies from past sessions, curates the right workflows and Cheatmaps from the Wisdom DB based on user intent, and enhances existing Skills through evaluation and ROI analysis. BYOK model with local extraction pipeline.",
-      "version": "1.1.0-beta",
+      "description": "Ratchet turns coding sessions into self-evolving wisdom for agents and developers. It automatically generates Skills and Strategies from past sessions, curates the right workflows and Cheatmaps from the Wisdom DB based on user intent, and enhances existing Skills through evaluation and ROI analysis. BYOK model with local extraction pipeline.",
+      "version": "2.0.0b1",
       "author": {
         "name": "Mind AI",
-        "email": "support@megacode.ai"
+        "email": "support@ratchetai.ai"
       },
       "category": "productivity",
       "tags": [
@@ -25,8 +25,8 @@
         "session-learning",
         "compound-intelligence"
       ],
-      "homepage": "https://www.megacode.ai",
-      "repository": "https://github.com/wisdomgraph/mega-code",
+      "homepage": "https://www.ratchetai.ai",
+      "repository": "https://github.com/wisdomgraph/ratchetai",
       "license": "Apache-2.0"
     }
   ]

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Ratchet Debug"
+  short_description: "Inspect local Ratchet pipeline evidence"
+  icon_small: "../../../assets/logo_ratchet.png"
+  icon_large: "../../../assets/logo_ratchet.png"
+  default_prompt: "Use $ratchet-debug to collect local Ratchet pipeline evidence and point me to the debug bundle."

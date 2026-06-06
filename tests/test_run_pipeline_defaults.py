@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 
-from mega_code.client.pending import PendingResult, format_pipeline_notification
-from mega_code.client.run_pipeline import _resolve_include_flags
+from ratchet.client.api.protocol import OutputsResult, PendingSkillData, PipelineStatusResult
+from ratchet.client.pending import PendingResult, format_pipeline_notification, save_outputs_to_pending
+from ratchet.client.run_pipeline import _resolve_include_flags
 
 
 def _make_args(
@@ -23,17 +25,19 @@ def _make_args(
     )
 
 
-def test_project_mode_in_codex_includes_codex_by_default():
+def test_project_mode_uses_source_registry_defaults(tmp_path, monkeypatch):
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
     include_claude, include_codex = _resolve_include_flags(
         _make_args(project=""),
         env={"CODEX_SHELL": "1"},
     )
 
-    assert include_claude is False
+    assert include_claude is True
     assert include_codex is True
 
 
-def test_explicit_source_selection_disables_codex_autoinclude():
+def test_explicit_source_selection_overrides_source_registry(tmp_path, monkeypatch):
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
     include_claude, include_codex = _resolve_include_flags(
         _make_args(project="", include_claude=True),
         env={"CODEX_SHELL": "1"},
@@ -43,7 +47,8 @@ def test_explicit_source_selection_disables_codex_autoinclude():
     assert include_codex is False
 
 
-def test_non_project_mode_does_not_autoinclude_codex():
+def test_non_project_mode_does_not_use_project_source_defaults(tmp_path, monkeypatch):
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
     include_claude, include_codex = _resolve_include_flags(
         _make_args(project=None),
         env={"CODEX_SHELL": "1"},
@@ -51,6 +56,51 @@ def test_non_project_mode_does_not_autoinclude_codex():
 
     assert include_claude is False
     assert include_codex is False
+
+
+def test_project_mode_does_not_require_codex_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    include_claude, include_codex = _resolve_include_flags(
+        _make_args(project=""),
+        env={"CODEX_HOME": "/tmp/codex-home"},
+    )
+
+    assert include_claude is True
+    assert include_codex is True
+
+
+def test_pending_save_uses_metadata_governance_for_default_fields(tmp_path, monkeypatch):
+    monkeypatch.setenv("RATCHET_DATA_DIR", str(tmp_path / "data"))
+    metadata = {
+        "validation_level": "verified",
+        "trust_tier": "trusted",
+        "safety_gate_status": "approved",
+        "safety_gate_reason": "verified in regression test",
+    }
+    status = PipelineStatusResult(
+        run_id="run-1",
+        project_id="project-1",
+        status="completed",
+        outputs=OutputsResult(
+            pending_skills=[
+                PendingSkillData(
+                    skill_name="auth-refresh",
+                    skill_md="# Auth Refresh\n",
+                    injection_rules="{}",
+                    evidence="[]",
+                    metadata=json.dumps(metadata),
+                )
+            ]
+        ),
+    )
+
+    result = save_outputs_to_pending(status)
+
+    assert result.skills[0].validation_passed is True
+    assert result.skills[0].validation_level == "verified"
+    assert result.skills[0].trust_tier == "trusted"
+    assert result.skills[0].safety_gate_status == "approved"
+    assert result.skills[0].safety_gate_reason == "verified in regression test"
 
 
 def test_error_only_pipeline_notification_uses_error_template():

@@ -1,4 +1,4 @@
-"""Shared test fixtures for mega-code-oss tests."""
+"""Shared test fixtures for ratchet-oss tests."""
 
 from __future__ import annotations
 
@@ -28,8 +28,8 @@ if [ -z "$PYTHON_BIN" ]; then
   echo "fake uv: no python interpreter found" >&2
   exit 2
 fi
-if [ -n "${MEGA_CODE_TEST_UV_LOG:-}" ]; then
-  printf '%s\\n' "$*" >> "$MEGA_CODE_TEST_UV_LOG"
+if [ -n "${RATCHET_TEST_UV_LOG:-}" ]; then
+  printf '%s\\n' "$*" >> "$RATCHET_TEST_UV_LOG"
 fi
 cmd="${1:-}"
 if [ -z "$cmd" ]; then
@@ -78,9 +78,9 @@ PYEOF
     if [ -n "$dir" ]; then
       cd "$dir"
     fi
-    if [ "${1:-}" = "mega-code" ]; then
+    if [ "${1:-}" = "ratchet" ]; then
       shift
-      exec "$PYTHON_BIN" -m mega_code.client.cli "$@"
+      exec "$PYTHON_BIN" -m ratchet.client.cli "$@"
     fi
     if [ "${1:-}" = "python" ]; then
       shift
@@ -113,9 +113,9 @@ def test_env(repo_root: Path, tmp_path: Path, fake_uv: dict[str, Path]) -> dict[
         {
             "CLAUDE_PLUGIN_ROOT": str(repo_root),
             "HOME": str(home),
-            "MEGA_CODE_DATA_DIR": str(data_dir),
-            "MEGA_CODE_TEST_FAKE_LLM": "1",
-            "MEGA_CODE_TEST_UV_LOG": str(fake_uv["log_path"]),
+            "RATCHET_DATA_DIR": str(data_dir),
+            "RATCHET_TEST_FAKE_LLM": "1",
+            "RATCHET_TEST_UV_LOG": str(fake_uv["log_path"]),
             "OPENAI_API_KEY": "sk-test-local",
             "PATH": path,
             "PYTHON_BIN": str(repo_root / ".venv" / "bin" / "python"),

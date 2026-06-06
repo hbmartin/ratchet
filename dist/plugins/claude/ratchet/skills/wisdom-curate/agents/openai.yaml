@@ -1,0 +1,6 @@
+interface:
+  display_name: "Wisdom Curate"
+  short_description: "Curate a workflow from local wisdom"
+  icon_small: "../../../assets/logo_ratchet.png"
+  icon_large: "../../../assets/logo_ratchet.png"
+  default_prompt: "Use $ratchet-wisdom-curate to retrieve relevant Ratchet wisdom and curate a workflow for this task."

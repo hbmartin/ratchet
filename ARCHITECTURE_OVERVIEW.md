@@ -1,12 +1,12 @@
-# MEGA-Code Architecture
+# Ratchet Architecture
 
-This document describes the architecture of MEGA-Code, an open-source Claude Code
+This document describes the architecture of Ratchet, an open-source Claude Code
 plugin that collects interaction data, extracts reusable skills and strategies,
 and optimizes AI workflows through a local-first runtime.
 
 ## 1. System Overview
 
-MEGA-Code operates as a local-first runtime. The MEGA service is not required for
+Ratchet operates as a local-first runtime. The Ratchet service is not required for
 normal pipeline or curation flows. User-controlled provider keys (`GEMINI_API_KEY`,
 `OPENAI_API_KEY`) power embeddings and optional generation.
 
@@ -17,15 +17,15 @@ graph TB
         Hooks[Hooks Engine]
     end
 
-    subgraph "MEGA-Code Plugin"
+    subgraph "Ratchet Plugin"
         Collector[Collector]
-        CLI[CLI - mega-code]
+        CLI[CLI - ratchet]
         RunPipeline[Pipeline Runner]
         CheckPending[Pending Checker]
     end
 
     subgraph "Local Runtime"
-        LocalClient[MegaCodeLocal]
+        LocalClient[RatchetLocal]
         Worker[Detached Worker]
         Runtime[Runtime Engine]
         Store[LocalStore - SQLite]
@@ -70,7 +70,7 @@ graph TB
 The codebase is organized into two main packages:
 
 ```
-mega_code/
+ratchet/
 ├── client/              # User-facing CLI, hooks, data collection
 │   ├── api/             # Client factory, protocol, remote/sync adapters
 │   ├── filters/         # Content filtering (paths, secrets)
@@ -81,7 +81,7 @@ mega_code/
 │   ├── host_llm.py      # Host-agent LLM abstraction (subprocess-based)
 │   └── utils/           # I/O, path, env, tracing helpers
 ├── pipeline/            # Local runtime engine
-│   ├── local_client.py  # MegaCodeLocal implementation
+│   ├── local_client.py  # RatchetLocal implementation
 │   ├── runtime.py       # Distillation, retrieval, curation logic
 │   ├── store.py         # SQLite state store
 │   ├── llm.py           # Provider abstraction (Gemini, OpenAI, Fake)
@@ -132,7 +132,7 @@ flowchart LR
 
 ## 4. Hook Integration
 
-MEGA-Code integrates with Claude Code through its hooks system. Four hook events
+Ratchet integrates with Claude Code through its hooks system. Four hook events
 drive data collection and skill delivery:
 
 ```mermaid
@@ -162,12 +162,12 @@ sequenceDiagram
 
 ### 5.1 Protocol and Factory
 
-All client operations go through `MegaCodeBaseClient`, a Python `Protocol` class.
+All client operations go through `RatchetBaseClient`, a Python `Protocol` class.
 The factory always resolves to local mode:
 
 ```mermaid
 classDiagram
-    class MegaCodeBaseClient {
+    class RatchetBaseClient {
         <<Protocol>>
         +upload_trajectory()
         +trigger_pipeline_run()
@@ -182,30 +182,30 @@ classDiagram
         +get_active_pipelines()
     }
 
-    class MegaCodeLocal {
+    class RatchetLocal {
         -store: LocalStore
         -backend: str
         -project_id: str
         -model_name: str
     }
 
-    class MegaCodeRemote {
+    class RatchetRemote {
         -server_url: str
         -api_key: str
         +HTTP-based implementation
     }
 
-    MegaCodeBaseClient <|.. MegaCodeLocal : implements
-    MegaCodeBaseClient <|.. MegaCodeRemote : implements (legacy)
+    RatchetBaseClient <|.. RatchetLocal : implements
+    RatchetBaseClient <|.. RatchetRemote : implements (legacy)
 
     class create_client {
         <<factory>>
-        +always returns MegaCodeLocal
+        +always returns RatchetLocal
     }
-    create_client ..> MegaCodeLocal : creates
+    create_client ..> RatchetLocal : creates
 ```
 
-`create_client()` lazy-imports `MegaCodeLocal` inside the function body to avoid
+`create_client()` lazy-imports `RatchetLocal` inside the function body to avoid
 import cycles (`profile -> api -> local_client -> profile`).
 
 ### 5.2 History Loading
@@ -216,7 +216,7 @@ multiple AI coding tools:
 | Source | Module | Description |
 |--------|--------|-------------|
 | Claude Native | `sources/claude_native.py` | Claude Code JSONL sessions |
-| MEGA-Code | `sources/mega_code.py` | Plugin-collected sessions |
+| Ratchet | `sources/ratchet.py` | Plugin-collected sessions |
 | Codex | `sources/codex.py` | OpenAI Codex CLI |
 | Cursor | `sources/cursor.py` | Cursor IDE sessions |
 | Gemini | `sources/gemini.py` | Gemini CLI sessions |
@@ -250,26 +250,46 @@ stateDiagram-v2
 
 ### 6.1 Triggering
 
-`MegaCodeLocal.trigger_pipeline_run()`:
+`RatchetLocal.trigger_pipeline_run()`:
 1. Checks for an active run on the same `project_id`.
 2. If active and `force=False`: raises HTTP 409 for existing conflict handling.
 3. If `force=True`: stops the existing run first.
 4. Creates a `pipeline_runs` row with `status='queued'`.
-5. Spawns a detached worker: `python -m mega_code.pipeline.worker --run-id <id>`.
-6. Records the worker PID.
+5. Creates `~/.local/ratchet/runs/{project_id}/{run_id}/`.
+6. Redirects worker stdout/stderr to `worker.log`.
+7. Spawns a detached worker: `python -m ratchet.pipeline.worker --run-id <id>`.
+8. Records the worker PID.
 
 ### 6.2 Worker Execution
 
-The worker (`mega_code/pipeline/worker.py`) is intentionally minimal:
+The worker (`ratchet/pipeline/worker.py`) is intentionally minimal:
 1. Marks run as started and stores PID.
 2. Calls `run_local_pipeline(run_id)`.
-3. Writes terminal state (`completed`, `failed`, or `stopped`).
+3. Writes lifecycle events and worker log lines.
+4. Writes terminal state (`completed`, `failed`, or `stopped`).
 
 ### 6.3 Status Reconciliation
 
 `LocalStore.get_pipeline_status()` calls `_reconcile_row()` to handle workers that
 disappear without writing terminal state. If a run is `queued` or `running` but its
 PID is no longer alive, the row is rewritten to `failed`.
+
+### 6.4 Traceability
+
+Each run stores:
+
+- `worker.log` for redirected worker stdout/stderr
+- `events.jsonl` plus matching `pipeline_events` rows
+- `llm/` prompt and response artifacts plus `pipeline_llm_calls` rows
+- heartbeat fields on `pipeline_runs`
+
+Debugging starts with:
+
+```bash
+ratchet debug
+ratchet debug --run-id <RUN_ID>
+ratchet debug-bundle --run-id <RUN_ID>
+```
 
 ## 7. Clustered Distillation Pipeline
 
@@ -577,7 +597,7 @@ classDiagram
 ```
 
 Provider selection order in `create_llm_client()`:
-1. `MEGA_CODE_TEST_FAKE_LLM=1` -- deterministic test provider
+1. `RATCHET_TEST_FAKE_LLM=1` -- deterministic test provider
 2. `GEMINI_API_KEY` -- Gemini REST provider
 3. `OPENAI_API_KEY` -- OpenAI REST provider
 4. Otherwise -- raises `LocalLLMError`
@@ -589,11 +609,12 @@ All providers normalize embeddings to 128 dimensions for SQLite storage compatib
 ### 11.1 Storage Layout
 
 ```
-~/.local/share/mega-code/           # MEGA_CODE_DATA_DIR override
+~/.local/ratchet/                 # RATCHET_DATA_DIR override
 ├── local-runtime.sqlite3            # Runtime state database
 ├── .env                             # Credential store
 ├── profile.json                     # User profile
 ├── plugin-root                      # Breadcrumb to plugin directory
+├── runs/{project_id}/{run_id}/       # Worker logs, events, LLM artifacts
 ├── projects/{project_id}/
 │   └── {session_id}/
 │       ├── turns.jsonl              # Normalized turn data
@@ -792,7 +813,7 @@ apart from provider API calls.
 
 ## 14. CLI Commands
 
-The `mega-code` CLI (`mega_code/client/cli.py`) provides:
+The `ratchet` CLI (`ratchet/client/cli.py`) provides:
 
 | Command | Description |
 |---------|-------------|
@@ -800,6 +821,11 @@ The `mega-code` CLI (`mega_code/client/cli.py`) provides:
 | `configure` | Set provider API keys and client options |
 | `login` | Legacy shim -- points to `configure` for local setup |
 | `profile` | View or update user profile (language, level, style) |
+| `pipeline-status` | Show active or recent runs with run dirs and heartbeat age |
+| `pipeline-inspect` | Show timeline events, failure summary, LLM calls, and artifact paths |
+| `pipeline-logs` | Tail or follow a run's `worker.log` |
+| `debug` | Collect local run evidence and write a debug bundle directory |
+| `debug-bundle` | Create a raw directory with run evidence |
 
 Pipeline operations are run through the hook system and `run_pipeline.py`:
 - `wisdom-gen` -- trigger pipeline, poll status, save outputs

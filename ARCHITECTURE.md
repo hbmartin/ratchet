@@ -1,7 +1,7 @@
-# MEGA-Code Local Runtime Architecture
+# Ratchet Local Runtime Architecture
 
 This document describes the local-first runtime introduced in the
-`Implement local MEGA-Code runtime` change set. It is intended for engineers
+`Implement local Ratchet runtime` change set. It is intended for engineers
 working on the OSS plugin codebase and focuses on implementation details,
 state flow, storage, and extension points.
 
@@ -9,8 +9,8 @@ state flow, storage, and extension points.
 
 The current OSS runtime is built around a single design decision:
 
-- `MEGA-Code` operates as a local runtime by default.
-- The MEGA service is not required for normal pipeline or curation flows.
+- `Ratchet` operates as a local runtime by default.
+- The Ratchet service is not required for normal pipeline or curation flows.
 - User-controlled provider keys (`GEMINI_API_KEY`, `OPENAI_API_KEY`) are used
   for embeddings and optional generation.
 - Local execution persists enough state to support:
@@ -78,12 +78,12 @@ The local runtime can be understood as five connected loops:
 
 ### 3.1 Local runtime package
 
-The local runtime lives under `mega_code/pipeline/`.
+The local runtime lives under `ratchet/pipeline/`.
 
-- `mega_code/pipeline/__init__.py`
-  - exports `MegaCodeLocal`.
+- `ratchet/pipeline/__init__.py`
+  - exports `RatchetLocal`.
 
-- `mega_code/pipeline/local_client.py`
+- `ratchet/pipeline/local_client.py`
   - canonical local client implementation,
   - implements the API protocol surface:
     - trajectory ingest,
@@ -95,7 +95,7 @@ The local runtime lives under `mega_code/pipeline/`.
     - local feedback,
     - local skill enhancement save.
 
-- `mega_code/pipeline/store.py`
+- `ratchet/pipeline/store.py`
   - SQLite-backed runtime state store,
   - owns schema initialization,
   - owns pipeline run state,
@@ -104,7 +104,7 @@ The local runtime lives under `mega_code/pipeline/`.
   - owns curation and feedback persistence,
   - owns operator reliability aggregation and derived metrics.
 
-- `mega_code/pipeline/runtime.py`
+- `ratchet/pipeline/runtime.py`
   - pure runtime logic,
   - session trace extraction (`_build_session_trace`, `_build_session_traces`),
   - trace clustering (`_cluster_traces`, `_connected_components`),
@@ -120,13 +120,13 @@ The local runtime lives under `mega_code/pipeline/`.
   - safety-gated reuse and dynamic governance evaluation,
   - cheatmap generation.
 
-- `mega_code/pipeline/llm.py`
+- `ratchet/pipeline/llm.py`
   - provider abstraction for embeddings and generation,
   - Gemini REST client,
   - OpenAI REST client,
   - deterministic fake provider for tests.
 
-- `mega_code/pipeline/worker.py`
+- `ratchet/pipeline/worker.py`
   - detached worker entrypoint,
   - looks up a persisted run,
   - executes local distillation,
@@ -134,40 +134,40 @@ The local runtime lives under `mega_code/pipeline/`.
 
 ### 3.2 Client modules
 
-- `mega_code/client/api/__init__.py`
+- `ratchet/client/api/__init__.py`
   - now always resolves to local mode,
-  - lazily imports `MegaCodeLocal` to avoid import cycles.
+  - lazily imports `RatchetLocal` to avoid import cycles.
 
-- `mega_code/client/api/protocol.py`
+- `ratchet/client/api/protocol.py`
   - shared client protocol including `wisdom_curate()` and `wisdom_feedback()`,
   - data models: `OperatorPlanItem`, `WisdomResultItem`, `WisdomCurateResult`,
     `WisdomFeedbackResult`, `ReliabilityMetrics`, `CausalStepFeedbackItem`,
     `SkillRefItem`.
 
-- `mega_code/client/cli.py`
+- `ratchet/client/cli.py`
   - treats local mode as canonical,
-  - no longer gates pipeline or curation commands on `MegaCodeRemote`.
+  - no longer gates pipeline or curation commands on `RatchetRemote`.
 
-- `mega_code/client/check_auth.py`
-  - validates local provider setup instead of `MEGA_CODE_API_KEY`.
+- `ratchet/client/check_auth.py`
+  - validates local provider setup instead of `RATCHET_API_KEY`.
 
-- `mega_code/client/skill_installer.py`
+- `ratchet/client/skill_installer.py`
   - can install from local source paths when `SkillRefItem.url` is empty.
 
-- `mega_code/client/run_pipeline.py`
+- `ratchet/client/run_pipeline.py`
   - wording and mode semantics now describe a local worker, not a server.
 
-- `mega_code/client/compaction.py`
+- `ratchet/client/compaction.py`
   - code block compaction for token reduction using regex-based placeholder
     replacement,
   - pure module with zero pipeline dependencies.
 
-- `mega_code/client/curation_store.py`
+- `ratchet/client/curation_store.py`
   - file-based curation lifecycle persistence,
   - tracks curations through `pending` -> `running` -> `completed` status
     transitions using directory-based organization.
 
-- `mega_code/client/host_llm.py`
+- `ratchet/client/host_llm.py`
   - host-agent LLM abstraction for skill evaluation,
   - detects available coding agent CLI (Claude Code, Codex, etc.) and runs
     isolated completions via subprocess,
@@ -177,12 +177,12 @@ The local runtime lives under `mega_code/pipeline/`.
 
 ### 4.1 Canonical mode
 
-`mega_code.client.api.resolve_mode()` now always returns `"local"`.
+`ratchet.client.api.resolve_mode()` now always returns `"local"`.
 
 Behavior:
 
 - explicit `remote` arguments are ignored,
-- `MEGA_CODE_CLIENT_MODE=remote` is ignored,
+- `RATCHET_CLIENT_MODE=remote` is ignored,
 - a warning is logged when callers still try to select remote mode.
 
 This is intentional. The runtime no longer asks the caller to make a mode
@@ -190,7 +190,7 @@ decision for normal OSS behavior.
 
 ### 4.2 Lazy import strategy
 
-`create_client()` lazy-imports `MegaCodeLocal` inside the function body.
+`create_client()` lazy-imports `RatchetLocal` inside the function body.
 
 Reason:
 
@@ -208,8 +208,8 @@ public API.
 
 The local runtime uses the existing `data_dir()` root:
 
-- default: `~/.local/share/mega-code`
-- override: `MEGA_CODE_DATA_DIR`
+- default: `~/.local/ratchet`
+- override: `RATCHET_DATA_DIR`
 
 Key subpaths used by the local runtime:
 
@@ -549,11 +549,11 @@ Fields:
 
 ### 6.1 Selection order
 
-Provider selection is implemented in `mega_code.pipeline.llm.create_llm_client()`.
+Provider selection is implemented in `ratchet.pipeline.llm.create_llm_client()`.
 
 Resolution order:
 
-1. `MEGA_CODE_TEST_FAKE_LLM=1`
+1. `RATCHET_TEST_FAKE_LLM=1`
    - deterministic test provider.
 2. `GEMINI_API_KEY`
    - Gemini REST provider.
@@ -613,7 +613,7 @@ Implementation notes:
 
 The canonical ingest method is:
 
-- `MegaCodeLocal.upload_trajectory(turn_set, project_id)`
+- `RatchetLocal.upload_trajectory(turn_set, project_id)`
 
 Behavior:
 
@@ -638,7 +638,7 @@ store and only falls back to collector history when needed.
 
 ### 8.1 Triggering a run
 
-`MegaCodeLocal.trigger_pipeline_run()` is async to preserve the existing
+`RatchetLocal.trigger_pipeline_run()` is async to preserve the existing
 client contract.
 
 Behavior:
@@ -650,14 +650,16 @@ Behavior:
 3. if `force=True`:
    - stop the existing run first,
 4. create a new run row with `status='queued'`,
-5. spawn a detached worker:
-   - `python -m mega_code.pipeline.worker --run-id <run_id>`
-6. store the worker `pid`,
-7. return `TriggerPipelineResult(..., status='queued')`.
+5. create the run debug directory with `worker.log`, `events.jsonl`, and `llm/`,
+6. spawn a detached worker:
+   - `python -m ratchet.pipeline.worker --run-id <run_id>`
+7. redirect worker stdout/stderr into the durable `worker.log`,
+8. store the worker `pid`,
+9. return `TriggerPipelineResult(..., status='queued')`.
 
 ### 8.2 Worker process
 
-`mega_code.pipeline.worker` is intentionally small.
+`ratchet.pipeline.worker` is intentionally small.
 
 It does three things:
 
@@ -697,6 +699,39 @@ Stopping is cooperative with a hard signal fallback.
 
 The worker also checks `store.is_stop_requested(run_id)` during distillation so
 it can stop gracefully between clusters.
+
+### 8.5 Run traceability
+
+Each run has a local debug directory:
+
+```text
+~/.local/ratchet/runs/{project_id}/{run_id}/
+├── worker.log
+├── events.jsonl
+└── llm/
+```
+
+The runtime writes structured lifecycle events to both `pipeline_events` and
+`events.jsonl`. Events update `last_heartbeat_at` and `heartbeat_count`, so
+`pipeline-status` can show stale or dead-worker warnings without requiring raw
+SQLite access.
+
+`PipelineTraceRecorder` wraps local LLM calls and records prompt/response
+artifacts under `llm/`. It records provider/model labels, duration, status, and
+artifact paths in `pipeline_llm_calls`. It does not persist API keys or request
+headers.
+
+OpenTelemetry export is optional and secondary. The default debugging system is
+the local run directory and SQLite trace tables. OTLP export requires installing
+the `telemetry` extra and setting `OTEL_EXPORTER_OTLP_ENDPOINT`.
+
+The operator workflow is CLI-first:
+
+```bash
+ratchet debug
+ratchet debug --run-id <RUN_ID>
+ratchet debug-bundle --run-id <RUN_ID>
+```
 
 ## 9. Session Loading
 
@@ -948,7 +983,7 @@ the clustering, analyst, and consolidator passes.
 
 After distillation, the runtime writes both:
 
-- pending outputs for normal MEGA-Code review flow,
+- pending outputs for normal Ratchet review flow,
 - normalized artifacts, PCR fragments, and operators into SQLite.
 
 ### 11.1 File persistence
@@ -987,7 +1022,7 @@ claim.
 
 ### 12.1 Entry point
 
-`MegaCodeLocal.wisdom_curate()` delegates to `runtime.curate_local_wisdom()`.
+`RatchetLocal.wisdom_curate()` delegates to `runtime.curate_local_wisdom()`.
 
 ### 12.2 Candidate corpus
 
@@ -1238,8 +1273,7 @@ It checks:
 
 It does not check:
 
-- `MEGA_CODE_API_KEY`
-- server reachability.
+- provider API keys in `~/.local/ratchet/.env`.
 
 ### 15.2 Login
 
@@ -1248,9 +1282,10 @@ instructions instead of attempting OAuth.
 
 ### 15.3 Pipeline commands
 
-`pipeline-status`, `pipeline-stop`, `wisdom-curate`, and `wisdom-feedback`
-now operate against the protocol client surface directly and no longer require
-`MegaCodeRemote`.
+`pipeline-status`, `pipeline-inspect`, `pipeline-logs`, `debug`, `debug-bundle`,
+`pipeline-stop`, `wisdom-curate`, and `wisdom-feedback` now operate against the
+local store or protocol client surface directly and no longer require
+`RatchetRemote`.
 
 ## 16. Testing Strategy
 
@@ -1315,7 +1350,7 @@ If the local runtime is extended later, the most natural places are:
 ### Better distillation
 
 File:
-- `mega_code/pipeline/runtime.py`
+- `ratchet/pipeline/runtime.py`
 
 Possible improvements:
 - richer clustering with learned similarity models,
@@ -1326,8 +1361,8 @@ Possible improvements:
 ### Better retrieval
 
 Files:
-- `mega_code/pipeline/runtime.py`
-- `mega_code/pipeline/store.py`
+- `ratchet/pipeline/runtime.py`
+- `ratchet/pipeline/store.py`
 
 Possible improvements:
 - ANN indexing for large operator sets,
@@ -1339,7 +1374,7 @@ Possible improvements:
 ### Better feedback
 
 File:
-- `mega_code/pipeline/store.py`
+- `ratchet/pipeline/store.py`
 
 Possible improvements:
 - decay old feedback over time,
@@ -1350,8 +1385,8 @@ Possible improvements:
 ### Background execution robustness
 
 Files:
-- `mega_code/pipeline/local_client.py`
-- `mega_code/pipeline/worker.py`
+- `ratchet/pipeline/local_client.py`
+- `ratchet/pipeline/worker.py`
 
 Possible improvements:
 - platform-specific detached execution handling,

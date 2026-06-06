@@ -1,0 +1,6 @@
+interface:
+  display_name: "Stop Ratchet"
+  short_description: "Stop a running pipeline"
+  icon_small: "../../../assets/logo_ratchet.png"
+  icon_large: "../../../assets/logo_ratchet.png"
+  default_prompt: "Use $ratchet-stop to stop a running Ratchet pipeline."

@@ -1,0 +1,20 @@
+{
+  "name": "ratchet",
+  "version": "2.0.0b1",
+  "description": "Self-evolving AI coding infrastructure for skills, strategies, and session learning.",
+  "author": {
+    "name": "Mind AI",
+    "email": "support@ratchetai.ai"
+  },
+  "homepage": "https://www.ratchetai.ai",
+  "repository": "https://github.com/wisdomgraph/ratchetai",
+  "license": "Apache-2.0",
+  "keywords": [
+    "ratchet",
+    "codex",
+    "claude",
+    "skills",
+    "session-learning",
+    "optimization"
+  ]
+}

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Wisdom Generate"
+  short_description: "Generate skills and strategies"
+  icon_small: "../../../assets/logo_ratchet.png"
+  icon_large: "../../../assets/logo_ratchet.png"
+  default_prompt: "Use $ratchet-wisdom-gen to analyze project sessions and generate reusable skills and strategies."

@@ -1,0 +1,42 @@
+{
+  "name": "ratchet",
+  "version": "2.0.0b1",
+  "description": "Self-evolving AI coding infrastructure for skills, strategies, and session learning.",
+  "author": {
+    "name": "Mind AI",
+    "email": "support@ratchetai.ai",
+    "url": "https://www.ratchetai.ai"
+  },
+  "homepage": "https://www.ratchetai.ai",
+  "repository": "https://github.com/wisdomgraph/ratchetai",
+  "license": "Apache-2.0",
+  "keywords": [
+    "ratchet",
+    "codex",
+    "claude",
+    "skills",
+    "session-learning",
+    "optimization"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Ratchet",
+    "shortDescription": "Turn coding sessions into reusable skills and strategies",
+    "longDescription": "Ratchet collects local agent sessions, extracts reusable skills and strategies, curates workflows from local wisdom, and supports Claude and Codex as first-class hosts.",
+    "developerName": "Mind AI",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://www.ratchetai.ai",
+    "defaultPrompt": [
+      "Use Ratchet to generate reusable skills and strategies from this project.",
+      "Show my pending Ratchet items and recent pipeline status."
+    ],
+    "composerIcon": "./assets/logo_ratchet.png",
+    "logo": "./assets/logo_ratchet.png",
+    "screenshots": [],
+    "brandColor": "#2563EB"
+  }
+}

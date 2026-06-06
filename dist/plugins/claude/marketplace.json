@@ -1,0 +1,33 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "mind-ai-ratchet",
+  "owner": {
+    "name": "Mind AI",
+    "email": "support@ratchetai.ai"
+  },
+  "metadata": {
+    "description": "Self-evolving AI coding infrastructure for skills, strategies, and session learning."
+  },
+  "plugins": [
+    {
+      "name": "ratchet",
+      "source": "./ratchet",
+      "description": "Self-evolving AI coding infrastructure for skills, strategies, and session learning.",
+      "version": "2.0.0b1",
+      "author": {
+        "name": "Mind AI",
+        "email": "support@ratchetai.ai"
+      },
+      "category": "productivity",
+      "tags": [
+        "agent-evolution",
+        "skill-extraction",
+        "session-learning",
+        "compound-intelligence"
+      ],
+      "homepage": "https://www.ratchetai.ai",
+      "repository": "https://github.com/wisdomgraph/ratchetai",
+      "license": "Apache-2.0"
+    }
+  ]
+}
