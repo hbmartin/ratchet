@@ -17,7 +17,7 @@ import shutil
 import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from ratchet.client.config import load_config
 
@@ -46,7 +46,7 @@ def _validate_embedding_vectors(
         if isinstance(vector, (str, bytes)) or not isinstance(vector, Iterable):
             raise LocalLLMError(f"{provider} returned non-vector embedding at index {index}")
         try:
-            coerced = [float(value) for value in vector]
+            coerced = [float(value) for value in cast(Iterable[Any], vector)]
         except (TypeError, ValueError) as exc:
             raise LocalLLMError(
                 f"{provider} returned non-numeric embedding value at index {index}"
@@ -421,9 +421,10 @@ class RouterLLM(BaseLocalLLM):
                 raise ValueError("ranked_indices is not a list")
             if not isinstance(ranked_indices, list):
                 raise ValueError("ranked_indices is not a list")
+            resolved_indices: list[Any] = ranked_indices
             seen: set[int] = set()
             ranked: list[RerankedDocument] = []
-            for rank, value in enumerate(ranked_indices):
+            for rank, value in enumerate(resolved_indices):
                 index = int(value)
                 if index in seen or index < 0 or index >= len(documents):
                     continue
@@ -528,10 +529,10 @@ def create_llm_client() -> BaseLocalLLM:
         generation_order = ["deterministic"]
         embedding_order = ["deterministic"]
 
-    generation_providers = [
+    generation_providers: list[BaseLocalLLM] = [
         provider for name in generation_order if (provider := _build_provider(name, config))
     ]
-    embedding_providers = [
+    embedding_providers: list[BaseLocalLLM] = [
         provider for name in embedding_order if (provider := _build_provider(name, config))
     ]
     if not generation_providers:

@@ -453,14 +453,14 @@ class CodexSource:
     def iter_sessions_by_project_paths(
         self,
         project_paths: list[str],
-        path_matcher: Callable[[str, set[str]], bool] | None = None,
+        path_matcher: Callable[[str, set[Path]], bool] | None = None,
     ) -> Iterator[dict[str, Any]]:
         """Iterate over session entries matching project paths.
 
         Args:
             project_paths: List of project paths to filter by.
             path_matcher: Optional custom path matching function.
-                         Signature: (session_path: str, target_paths: set[str]) -> bool
+                         Signature: (session_path: str, target_paths: set[Path]) -> bool
                          If None, uses path_utils.should_include_session.
 
         Yields:

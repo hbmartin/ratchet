@@ -33,7 +33,7 @@ from ratchet.client.api.protocol import TERMINAL_STATUSES
 from ratchet.client.dirs import data_dir as _data_dir
 
 if TYPE_CHECKING:
-    from ratchet.client.api.protocol import RatchetBaseClient, PipelineStatusResult
+    from ratchet.client.api.protocol import PipelineStatusResult, RatchetBaseClient
 
 logger = logging.getLogger(__name__)
 
@@ -292,32 +292,60 @@ def save_outputs_to_pending(
         strat_name = _sanitize_name(strat.strategy_name)
         PENDING_STRATEGIES_DIR.mkdir(parents=True, exist_ok=True)
         path = PENDING_STRATEGIES_DIR / f"{strat_name}.md"
+        strategy_metadata: dict[str, str] = {}
+        validation_level = _governance_value(
+            strat.validation_level,
+            strategy_metadata,
+            "validation_level",
+            "observed",
+        )
+        trust_tier = _governance_value(
+            strat.trust_tier,
+            strategy_metadata,
+            "trust_tier",
+            "provisional",
+        )
+        safety_gate_status = _governance_value(
+            strat.safety_gate_status,
+            strategy_metadata,
+            "safety_gate_status",
+            "review_required",
+        )
+        safety_gate_reason = _governance_value(
+            strat.safety_gate_reason,
+            strategy_metadata,
+            "safety_gate_reason",
+            "",
+        )
+        strategy_category = strat.category or "local-runtime"
+        strategy_author = strat.author or get_author()
+        strategy_version = strat.version or DEFAULT_VERSION
         strategy_content = ensure_strategy_frontmatter(
             strat.content,
-            strat.category or "local-runtime",
-            author=strat.author or get_author(),
-            version=strat.version or DEFAULT_VERSION,
+            strategy_category,
+            author=strategy_author,
+            version=strategy_version,
             tags=strat.tags,
             extra_frontmatter={
-                "validation_level": strat.validation_level,
-                "trust_tier": strat.trust_tier,
-                "safety_gate_status": strat.safety_gate_status,
-                "safety_gate_reason": strat.safety_gate_reason,
+                "validation_level": validation_level,
+                "trust_tier": trust_tier,
+                "safety_gate_status": safety_gate_status,
+                "safety_gate_reason": safety_gate_reason,
             },
         )
         path.write_text(strategy_content, encoding="utf-8")
         result.strategies.append(
             PendingStrategyInfo(
                 name=strat_name,
-                description=_truncate(_extract_heading(strategy_content)),
+                description=_extract_strategy_description(strategy_content),
                 path=str(path),
-                category=strat.category,
-                validation_level=strat.validation_level,
-                trust_tier=strat.trust_tier,
-                safety_gate_status=strat.safety_gate_status,
-                safety_gate_reason=strat.safety_gate_reason,
-                author=strat.author,
-                version=strat.version,
+                category=strategy_category,
+                validation_level=validation_level,
+                trust_tier=trust_tier,
+                safety_gate_status=safety_gate_status,
+                safety_gate_reason=safety_gate_reason,
+                author=strategy_author,
+                version=strategy_version,
                 tags=strat.tags,
             )
         )
@@ -438,17 +466,18 @@ def get_pending_skills() -> list[PendingSkillInfo]:
     return skills
 
 
+def _markdown_body(content: str) -> str:
+    if not content.startswith("---"):
+        return content
+    parts = content.split("---", 2)
+    if len(parts) < 3:
+        return content
+    return parts[2].lstrip("\n")
+
+
 def _extract_first_paragraph(content: str) -> str:
     """Extract first non-heading paragraph from markdown, skipping frontmatter."""
-    in_frontmatter = False
-    for i, line in enumerate(content.strip().split("\n")):
-        if i == 0 and line.strip() == "---":
-            in_frontmatter = True
-            continue
-        if in_frontmatter:
-            if line.strip() == "---":
-                in_frontmatter = False
-            continue
+    for line in _markdown_body(content).strip().split("\n"):
         stripped = line.strip()
         if stripped and not stripped.startswith("#"):
             return _truncate(stripped)
@@ -457,10 +486,17 @@ def _extract_first_paragraph(content: str) -> str:
 
 def _extract_heading(content: str) -> str:
     """Extract text from the first # heading in markdown content, or empty string."""
-    for line in content.split("\n"):
+    for line in _markdown_body(content).split("\n"):
         if line.startswith("# "):
             return line[2:].strip()
     return ""
+
+
+def _extract_strategy_description(content: str) -> str:
+    description = _extract_heading(content)
+    if description:
+        return _truncate(description)
+    return _extract_first_paragraph(content)
 
 
 def get_pending_strategies() -> list[PendingStrategyInfo]:
@@ -474,20 +510,10 @@ def get_pending_strategies() -> list[PendingStrategyInfo]:
         fm = _parse_yaml_frontmatter(content)
         fm_tags = fm.get("tags", [])
 
-        # Use heading if present, otherwise first non-empty content line
-        description = _extract_heading(content)
-        if not description:
-            for line in content.split("\n"):
-                stripped = line.strip()
-                if stripped and not stripped.startswith("---") and not stripped.startswith("#"):
-                    if not stripped.startswith("category:"):
-                        description = stripped
-                        break
-
         strategies.append(
             PendingStrategyInfo(
                 name=strategy_file.stem,
-                description=_truncate(description),
+                description=_extract_strategy_description(content),
                 path=str(strategy_file),
                 category=str(fm.get("category", "")) or None,
                 validation_level=str(fm.get("validation_level", "observed")),

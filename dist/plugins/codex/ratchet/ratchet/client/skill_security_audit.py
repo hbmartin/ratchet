@@ -11,6 +11,7 @@ import logging
 import re
 import sys
 from pathlib import Path
+from typing import TypedDict
 
 from rich.console import Console
 
@@ -25,7 +26,16 @@ logger = logging.getLogger(__name__)
 console = Console()
 error_console = Console(stderr=True)
 
-_PATTERN_RULES = [
+
+class _PatternRule(TypedDict):
+    name: str
+    category: str
+    severity: str
+    regex: re.Pattern[str]
+    description: str
+
+
+_PATTERN_RULES: list[_PatternRule] = [
     {
         "name": "curl_pipe_bash",
         "category": "Supply Chain & Dependencies",

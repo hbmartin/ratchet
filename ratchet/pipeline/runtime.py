@@ -15,7 +15,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -36,6 +36,8 @@ from ratchet.client.skill_utils import DEFAULT_VERSION, get_author, sanitize_nam
 from ratchet.pipeline.llm import BaseLocalLLM, create_llm_client
 from ratchet.pipeline.store import LocalStore, cosine_similarity, normalize_scores, utcnow_iso
 from ratchet.pipeline.trace_recorder import PipelineTraceRecorder
+
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 _STOP_WORDS = {
     "the",
@@ -1215,7 +1217,7 @@ def _coerce_workflow_item(value: Any) -> dict[str, Any]:
     return {"title": item, "rule": item} if item else {}
 
 
-def _parse_llm_json(raw_text: str, label: str, model_cls: type[BaseModel]) -> BaseModel:
+def _parse_llm_json(raw_text: str, label: str, model_cls: type[_ModelT]) -> _ModelT:
     last_parse_error: json.JSONDecodeError | None = None
     last_schema_error: ValidationError | None = None
     for candidate in _iter_json_candidates(raw_text):
@@ -3373,7 +3375,8 @@ def _evaluate_operator_governance(
     if operator.get("validation_level") == "observed":
         status = "review_required"
         reasons.append("Observed knowledge has not passed verification yet.")
-    provenance = operator.get("provenance") if isinstance(operator.get("provenance"), dict) else {}
+    raw_provenance = operator.get("provenance")
+    provenance = raw_provenance if isinstance(raw_provenance, dict) else {}
     source_artifact_digest = str(provenance.get("source_artifact_digest", "")).strip()
     source_file = _source_artifact_file(operator)
     if source_artifact_digest and source_file is not None:

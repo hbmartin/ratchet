@@ -92,9 +92,14 @@ class RatchetLocal:
         if active_run_id and not force:
             raise PipelineConflictError(project_id=project_id, run_id=active_run_id)
         if active_run_id and force:
-            active_pid = self.store.get_pipeline_run_row(active_run_id).get("pid")
-            self.stop_pipeline(run_id=active_run_id)
-            await self._wait_for_run_exit(active_run_id, active_pid)
+            try:
+                active_row = self.store.get_pipeline_run_row(active_run_id)
+            except KeyError:
+                active_row = None
+            if active_row is not None:
+                active_pid = active_row.get("pid")
+                self.stop_pipeline(run_id=active_run_id)
+                await self._wait_for_run_exit(active_run_id, active_pid)
 
         run_id = str(uuid.uuid4())
         result = self.store.create_run(
@@ -114,16 +119,25 @@ class RatchetLocal:
         paths = self.store.ensure_run_debug_paths(run_id)
         try:
             with open(paths["log_path"], "ab", buffering=0) as log_handle:
-                kwargs = {
-                    "stdout": log_handle,
-                    "stderr": subprocess.STDOUT,
-                    "stdin": subprocess.DEVNULL,
-                    "close_fds": True,
-                    "env": env,
-                }
                 if os.name != "nt":
-                    kwargs["start_new_session"] = True
-                proc = subprocess.Popen(cmd, **kwargs)
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdout=log_handle,
+                        stderr=subprocess.STDOUT,
+                        stdin=subprocess.DEVNULL,
+                        close_fds=True,
+                        env=env,
+                        start_new_session=True,
+                    )
+                else:
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdout=log_handle,
+                        stderr=subprocess.STDOUT,
+                        stdin=subprocess.DEVNULL,
+                        close_fds=True,
+                        env=env,
+                    )
         except Exception as exc:
             self.store.record_pipeline_event(
                 run_id,
@@ -157,9 +171,12 @@ class RatchetLocal:
         """Wait for a stopped worker PID to exit before replacing it."""
         deadline = time.monotonic() + timeout
         while True:
-            status = self.store.get_pipeline_status(run_id)
+            try:
+                status = self.store.get_pipeline_status(run_id)
+            except KeyError:
+                return
             pid_running = self._pid_is_running(pid)
-            if not pid_running and status.status not in ACTIVE_STATUSES:
+            if not pid_running or status.status not in ACTIVE_STATUSES:
                 return
 
             remaining = deadline - time.monotonic()
@@ -172,13 +189,52 @@ class RatchetLocal:
 
     @staticmethod
     def _pid_is_running(pid: int | None) -> bool:
-        if not pid:
+        if not pid or pid <= 0:
             return False
+        if os.name == "nt":
+            return RatchetLocal._windows_pid_is_running(pid)
+        return RatchetLocal._posix_pid_is_running(pid)
+
+    @staticmethod
+    def _posix_pid_is_running(pid: int) -> bool:
+        try:
+            waited_pid, _status = os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+        except OSError:
+            return False
+        else:
+            if waited_pid == pid:
+                return False
+
         try:
             os.kill(pid, 0)
         except OSError:
             return False
         return True
+
+    @staticmethod
+    def _windows_pid_is_running(pid: int) -> bool:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        synchronize = 0x00100000
+        query_limited_information = 0x1000
+        wait_timeout = 0x00000102
+        kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_int
+
+        handle = kernel32.OpenProcess(synchronize | query_limited_information, False, pid)
+        if not handle:
+            return False
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == wait_timeout
+        finally:
+            kernel32.CloseHandle(handle)
 
     def get_pipeline_status(
         self,

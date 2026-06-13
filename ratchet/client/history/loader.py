@@ -17,8 +17,8 @@ from typing import Literal
 from ratchet.client.history.models import Session
 from ratchet.client.history.protocol import DataSource
 from ratchet.client.history.sources.claude_native import ClaudeNativeSource
-from ratchet.client.history.sources.ratchet import RatchetSource
 from ratchet.client.history.sources.parquet import ParquetDatasetSource
+from ratchet.client.history.sources.ratchet import RatchetSource
 
 logger = logging.getLogger(__name__)
 

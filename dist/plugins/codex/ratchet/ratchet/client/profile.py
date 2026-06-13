@@ -28,8 +28,10 @@ def load_profile() -> UserProfile:
         return UserProfile()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise TypeError("profile JSON must be an object")
         return UserProfile(**data)
-    except (OSError, json.JSONDecodeError, ValueError):
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
         logger.warning("Ignoring unreadable or corrupt profile file: %s", path, exc_info=True)
         return UserProfile()
 

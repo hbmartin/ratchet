@@ -21,6 +21,7 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import cast
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ async def _run_ab(test_cases: list[dict], skill_md: str, agent: str | None = Non
 
     Returns a list of dicts, one per test case.
     """
-    from ratchet.client.host_llm import complete
+    from ratchet.client.host_llm import CompletionResult, complete
 
     async def _one(tc: dict) -> dict:
         task = tc["task"]
@@ -51,10 +52,12 @@ async def _run_ab(test_cases: list[dict], skill_md: str, agent: str | None = Non
             complete(prompt=task, agent=agent),
             return_exceptions=True,
         )
+        checked_results: list[CompletionResult] = []
         for outcome in outcomes:
             if isinstance(outcome, BaseException):
                 raise outcome
-        with_result, baseline_result = outcomes
+            checked_results.append(outcome)
+        with_result, baseline_result = checked_results
         return {
             "task": task,
             "expectations": tc.get("expectations", []),
@@ -67,10 +70,12 @@ async def _run_ab(test_cases: list[dict], skill_md: str, agent: str | None = Non
         }
 
     outcomes = await asyncio.gather(*[_one(tc) for tc in test_cases], return_exceptions=True)
+    checked_outcomes: list[dict] = []
     for outcome in outcomes:
         if isinstance(outcome, BaseException):
             raise outcome
-    return list(outcomes)
+        checked_outcomes.append(cast(dict, outcome))
+    return checked_outcomes
 
 
 def main() -> None:

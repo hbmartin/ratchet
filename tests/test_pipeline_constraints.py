@@ -15,6 +15,7 @@ from ratchet.client.api.protocol import (
     TriggerPipelineResult,
 )
 from ratchet.client.api.remote import RatchetRemote
+from ratchet.pipeline import local_client as local_client_module
 from ratchet.pipeline.local_client import RatchetLocal
 
 
@@ -109,6 +110,51 @@ class TestLocalPipelineConflicts:
 
         assert calls[0] == ("wait", "run-old", os.getpid())
         assert calls[1] == ("spawn", "run-new", None)
+
+    @pytest.mark.asyncio
+    async def test_force_ignores_stale_active_run_id(self, client, monkeypatch):
+        monkeypatch.setattr(
+            client.store, "find_active_run_for_project", lambda project_id: "missing"
+        )
+        monkeypatch.setattr(
+            client.store,
+            "get_pipeline_run_row",
+            lambda run_id: (_ for _ in ()).throw(KeyError(run_id)),
+        )
+        monkeypatch.setattr(
+            "ratchet.pipeline.local_client.subprocess.Popen",
+            lambda *args, **kwargs: SimpleNamespace(pid=os.getpid()),
+        )
+
+        result = await client.trigger_pipeline_run(project_id="test-project", force=True)
+
+        assert result.status == "queued"
+
+    @pytest.mark.asyncio
+    async def test_wait_for_run_exit_returns_when_pid_is_dead_but_status_active(
+        self, client, monkeypatch
+    ):
+        _seed_active_run(client, project_id="test-project", run_id="run-old")
+        monkeypatch.setattr(client, "_pid_is_running", lambda pid: False)
+
+        await client._wait_for_run_exit("run-old", os.getpid(), timeout=0.01)
+
+    def test_posix_pid_liveness_treats_reaped_child_as_stopped(self, monkeypatch):
+        monkeypatch.setattr(local_client_module.os, "waitpid", lambda pid, options: (pid, 0))
+
+        assert RatchetLocal._posix_pid_is_running(12345) is False
+
+    def test_windows_pid_liveness_uses_windows_probe(self, monkeypatch):
+        calls: list[int] = []
+        monkeypatch.setattr(local_client_module.os, "name", "nt")
+        monkeypatch.setattr(
+            RatchetLocal,
+            "_windows_pid_is_running",
+            staticmethod(lambda pid: calls.append(pid) is None or True),
+        )
+
+        assert RatchetLocal._pid_is_running(12345) is True
+        assert calls == [12345]
 
     @pytest.mark.asyncio
     async def test_trigger_preserves_local_run_options(self, client, monkeypatch):

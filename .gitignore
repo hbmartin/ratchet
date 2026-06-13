@@ -39,3 +39,5 @@ htmlcov/
 *.pyc
 reviews_triage/
 triage_decisions.db
+
+docs

@@ -202,9 +202,10 @@ def normalize_pending_skill_markdown(
     resolved_version = str(
         version or skill_frontmatter_value(frontmatter, "version", "") or default_version
     )
-    resolved_tags = tags or skill_frontmatter_value(frontmatter, "tags", [])
-    if not isinstance(resolved_tags, list):
-        resolved_tags = []
+    raw_tags = tags if tags is not None else skill_frontmatter_value(frontmatter, "tags", [])
+    resolved_tags = (
+        [item for item in raw_tags if isinstance(item, str)] if isinstance(raw_tags, list) else []
+    )
 
     extra_frontmatter: dict[str, object] = {}
     generated_at = skill_frontmatter_value(frontmatter, "generated_at", "")
@@ -608,8 +609,14 @@ def ensure_strategy_frontmatter(
         for key, value in (extra_frontmatter or {}).items()
         if value not in (None, "")
     }
-    if content.strip().startswith("---"):
-        frontmatter, body = split_frontmatter(content)
+    if content.startswith("---"):
+        parts = content.split("---", 2)
+        if len(parts) < 3:
+            return content
+        frontmatter = parse_frontmatter(content)
+        if not frontmatter and parts[1].strip():
+            return content
+        body = parts[2].lstrip("\n")
         normalized = dict(frontmatter)
         if category:
             normalized.setdefault("category", category)
@@ -632,7 +639,8 @@ def ensure_strategy_frontmatter(
         frontmatter["author"] = author
     if version:
         frontmatter["version"] = version
-    frontmatter.update(extra_fields)
+    for key, value in extra_fields.items():
+        frontmatter.setdefault(key, value)
 
     return render_frontmatter(frontmatter) + content
 
